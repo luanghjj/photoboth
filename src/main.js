@@ -358,8 +358,239 @@ function downloadStrip() {
 // ===== PRINT =====
 
 /**
- * Share/Save photo strip image so user can print via Epson TM Utility app
- * This is the most reliable method for iOS + TM-m30II (not AirPrint compatible)
+ * Detect if running on mobile
+ */
+function isMobile() {
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+}
+
+/**
+ * Method 1: macOS/Desktop System Print Dialog
+ * On macOS, Bluetooth printers DO appear in the print dialog (unlike iOS)
+ */
+function printViaSystem() {
+  if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
+
+  const win = window.open('', '_blank');
+  if (!win) { toast('Popup bị chặn!', 'error'); return; }
+
+  win.document.write(`<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<title>In Photo Strip</title>
+<style>
+  @page { size: 80mm auto; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #f5f5f5; display: flex; flex-direction: column; align-items: center; padding: 24px; font-family: -apple-system, sans-serif; }
+  img#strip { max-width: 300px; width: 100%; border-radius: 6px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+  .actions { margin-top: 20px; display: flex; gap: 10px; }
+  button { padding: 12px 24px; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-print { background: #007AFF; color: white; }
+  .btn-close { background: #e5e5ea; color: #1c1c1e; }
+  .hint { margin-top: 16px; font-size: 13px; color: #888; text-align: center; line-height: 1.6; max-width: 350px; }
+  .hint b { color: #333; }
+  @media print {
+    .no-print { display: none !important; }
+    body { background: white; padding: 0; }
+    img#strip { max-width: none; width: 80mm; border-radius: 0; box-shadow: none; }
+  }
+</style>
+</head><body>
+  <img id="strip" src="${S.currentStrip}" alt="Photo Strip">
+  <div class="actions no-print">
+    <button class="btn-print" onclick="window.print()">🖨️ In</button>
+    <button class="btn-close" onclick="window.close()">Đóng</button>
+  </div>
+  <p class="hint no-print">
+    Chọn <b>TM-m30II</b> trong danh sách máy in.<br>
+    Khổ giấy: <b>80mm</b> · Lề: <b>Không</b> · Tỷ lệ: <b>100%</b>
+  </p>
+</body></html>`);
+  win.document.close();
+}
+
+/**
+ * Method 2: Web Bluetooth (Chrome on Desktop/Android)
+ * Connects to TM-m30II via BLE GATT and sends ESC/POS raster image
+ */
+async function printViaBluetooth() {
+  if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
+
+  if (!navigator.bluetooth) {
+    toast('Trình duyệt không hỗ trợ Bluetooth. Dùng Chrome!', 'error');
+    return;
+  }
+
+  try {
+    toast('Chọn máy in TM-m30II...', 'info');
+
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [
+        { namePrefix: 'TM-m30' },
+        { namePrefix: 'EPSON' },
+      ],
+      optionalServices: [
+        '000018f0-0000-1000-8000-00805f9b34fb', // Epson BLE Print
+        '49535343-fe7d-4ae5-8fa9-9fafd205e455', // Nordic UART
+        'e7810a71-73ae-499d-8c15-faa9aef0c3f2', // Serial
+      ],
+      acceptAllDevices: false,
+    }).catch(() =>
+      // Fallback: show all BLE devices if no Epson found
+      navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [
+          '000018f0-0000-1000-8000-00805f9b34fb',
+          '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+          'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+        ],
+      })
+    );
+
+    toast(`Kết nối ${device.name || 'máy in'}...`, 'info');
+    const server = await device.gatt.connect();
+
+    // Find writable characteristic
+    let writeChar = null;
+    const services = await server.getPrimaryServices();
+
+    for (const svc of services) {
+      try {
+        const chars = await svc.getCharacteristics();
+        for (const ch of chars) {
+          if (ch.properties.write || ch.properties.writeWithoutResponse) {
+            writeChar = ch;
+            break;
+          }
+        }
+        if (writeChar) break;
+      } catch (e) { /* skip services that fail */ }
+    }
+
+    if (!writeChar) {
+      toast('Không tìm thấy kênh BLE để gửi dữ liệu', 'error');
+      server.disconnect();
+      return;
+    }
+
+    toast('Đang chuyển đổi ảnh...', 'info');
+    const printData = await imageToEscPos(S.currentStrip, 576);
+
+    // Send in chunks (BLE MTU usually 20-512 bytes)
+    const chunkSize = 200;
+    const totalChunks = Math.ceil(printData.length / chunkSize);
+
+    for (let i = 0; i < printData.length; i += chunkSize) {
+      const chunk = printData.slice(i, i + chunkSize);
+      const progress = Math.round(((i / chunkSize + 1) / totalChunks) * 100);
+
+      try {
+        if (writeChar.properties.writeWithoutResponse) {
+          await writeChar.writeValueWithoutResponse(chunk);
+        } else {
+          await writeChar.writeValue(chunk);
+        }
+      } catch (writeErr) {
+        // Retry with smaller chunk
+        const smallChunk = 20;
+        for (let j = 0; j < chunk.length; j += smallChunk) {
+          const mini = chunk.slice(j, j + smallChunk);
+          if (writeChar.properties.writeWithoutResponse) {
+            await writeChar.writeValueWithoutResponse(mini);
+          } else {
+            await writeChar.writeValue(mini);
+          }
+          await wait(10);
+        }
+      }
+      await wait(20);
+
+      if (i % (chunkSize * 10) === 0) {
+        toast(`Đang in... ${progress}%`, 'info');
+      }
+    }
+
+    toast('✅ In thành công!', 'success');
+    server.disconnect();
+  } catch (err) {
+    if (err.name === 'NotFoundError' || err.message?.includes('cancelled')) {
+      // User cancelled picker — do nothing
+    } else {
+      toast(`Lỗi BLE: ${err.message}`, 'error');
+      console.error('Bluetooth print error:', err);
+    }
+  }
+}
+
+/**
+ * Convert image to ESC/POS raster commands (binary)
+ */
+async function imageToEscPos(dataUrl, widthPx) {
+  const img = await loadImage(dataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = widthPx;
+  canvas.height = Math.round((img.height / img.width) * widthPx);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = imageData.data;
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // Grayscale + Floyd-Steinberg dithering
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    gray[i] = 0.299 * pixels[i*4] + 0.587 * pixels[i*4+1] + 0.114 * pixels[i*4+2];
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const old = gray[idx];
+      const val = old < 128 ? 0 : 255;
+      gray[idx] = val;
+      const err = old - val;
+      if (x + 1 < w) gray[idx + 1] += err * 7 / 16;
+      if (y + 1 < h) {
+        if (x - 1 >= 0) gray[(y+1)*w + x-1] += err * 3 / 16;
+        gray[(y+1)*w + x] += err * 5 / 16;
+        if (x + 1 < w) gray[(y+1)*w + x+1] += err * 1 / 16;
+      }
+    }
+  }
+
+  const bytesPerLine = Math.ceil(w / 8);
+  const buffer = [];
+
+  // ESC @ — initialize printer
+  buffer.push(0x1B, 0x40);
+  // GS v 0 — raster bit image (entire image at once)
+  buffer.push(0x1D, 0x76, 0x30, 0x00);
+  buffer.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
+  buffer.push(h & 0xFF, (h >> 8) & 0xFF);
+
+  for (let y = 0; y < h; y++) {
+    for (let xByte = 0; xByte < bytesPerLine; xByte++) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const x = xByte * 8 + bit;
+        if (x < w && gray[y * w + x] < 128) {
+          byte |= (0x80 >> bit);
+        }
+      }
+      buffer.push(byte);
+    }
+  }
+
+  // Feed + cut
+  buffer.push(0x1B, 0x64, 0x05); // Feed 5 lines
+  buffer.push(0x1D, 0x56, 0x41, 0x03); // Partial cut
+
+  return new Uint8Array(buffer);
+}
+
+/**
+ * Share/Save for mobile (iOS/Android)
  */
 async function saveAndPrint() {
   if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
@@ -368,28 +599,98 @@ async function saveAndPrint() {
     const blob = await (await fetch(S.currentStrip)).blob();
     const file = new File([blob], 'photobooth.jpg', { type: 'image/jpeg' });
 
-    // Try native share (iOS Share Sheet → can send to Epson app)
     if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        files: [file],
-        title: S.stripTitle || 'Photo Booth',
-      });
+      await navigator.share({ files: [file], title: S.stripTitle || 'Photo Booth' });
       toast('✓ Đã chia sẻ!', 'success');
       return;
     }
 
-    // Fallback: download
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `photobooth_${Date.now()}.jpg`;
     a.click();
     URL.revokeObjectURL(url);
-    toast('✓ Đã tải xuống! Mở ảnh → In qua Epson app', 'success');
+    toast('✓ Đã tải xuống!', 'success');
   } catch (e) {
-    if (e.name !== 'AbortError') {
-      toast('Lỗi: ' + e.message, 'error');
-    }
+    if (e.name !== 'AbortError') toast('Lỗi: ' + e.message, 'error');
+  }
+}
+
+/**
+ * Show print options — different for mobile vs desktop
+ */
+async function showPrintOptions() {
+  await composeStrip();
+
+  const actions = $('.preview-actions');
+  if (!actions) return;
+
+  const hasPrinterIP = !!S.printerIP;
+  const mobile = isMobile();
+  const hasBluetooth = !!navigator.bluetooth;
+
+  if (mobile) {
+    // MOBILE: Save/Share + ePOS WiFi
+    actions.innerHTML = `
+      <div class="full-width" style="display:flex;flex-direction:column;gap:10px">
+        <div style="text-align:center;padding:4px 0 8px">
+          <div style="font-size:12px;color:var(--text-muted);line-height:1.5">
+            📱 Trên điện thoại:
+          </div>
+        </div>
+        <div class="print-option-card" onclick="saveAndPrint()">
+          <div class="print-option-icon save">📤</div>
+          <div class="print-option-info">
+            <h3>Lưu & Chia sẻ ảnh</h3>
+            <p>Lưu ảnh → mở trong <b>Epson TM Utility</b> để in</p>
+          </div>
+        </div>
+        <div class="print-option-card" onclick="printViaEpson()">
+          <div class="print-option-icon bluetooth">🌐</div>
+          <div class="print-option-info">
+            <h3>In qua WiFi (ePOS)</h3>
+            <p>${hasPrinterIP ? `IP: <b>${S.printerIP}</b> — nhấn để in!` : 'Nhập IP máy in khi có WiFi'}</p>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
+      </div>
+    `;
+  } else {
+    // DESKTOP (Mac/Windows): System Print + Bluetooth + ePOS
+    actions.innerHTML = `
+      <div class="full-width" style="display:flex;flex-direction:column;gap:10px">
+        <div style="text-align:center;padding:4px 0 8px">
+          <div style="font-size:12px;color:var(--text-muted);line-height:1.5">
+            💻 Trên máy tính:
+          </div>
+        </div>
+        <div class="print-option-card" onclick="printViaSystem()">
+          <div class="print-option-icon save">🖨️</div>
+          <div class="print-option-info">
+            <h3>In qua hệ thống (macOS)</h3>
+            <p>Chọn <b>TM-m30II</b> đã pair Bluetooth trong danh sách máy in</p>
+          </div>
+        </div>
+        ${hasBluetooth ? `
+        <div class="print-option-card" onclick="printViaBluetooth()">
+          <div class="print-option-icon bluetooth">🔵</div>
+          <div class="print-option-info">
+            <h3>In trực tiếp qua Bluetooth</h3>
+            <p>Kết nối BLE trực tiếp — gửi ảnh qua ESC/POS (Chrome)</p>
+          </div>
+        </div>
+        ` : ''}
+        <div class="print-option-card" onclick="printViaEpson()">
+          <div class="print-option-icon bluetooth">🌐</div>
+          <div class="print-option-info">
+            <h3>In qua WiFi (ePOS)</h3>
+            <p>${hasPrinterIP ? `IP: <b>${S.printerIP}</b> — nhấn để in!` : 'Nhập IP nếu máy in có WiFi'}</p>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
+      </div>
+    `;
   }
 }
 
@@ -850,44 +1151,7 @@ async function shareStrip() {
   }
 }
 
-async function showPrintOptions() {
-  await composeStrip();
 
-  const actions = $('.preview-actions');
-  if (!actions) return;
-
-  const hasPrinterIP = !!S.printerIP;
-
-  actions.innerHTML = `
-    <div class="full-width" style="display:flex;flex-direction:column;gap:10px">
-      <div style="text-align:center;padding:4px 0 8px">
-        <div style="font-size:12px;color:var(--text-muted);line-height:1.5">
-          ⚠️ TM-m30II không hỗ trợ AirPrint.<br>
-          Dùng 1 trong 2 cách dưới đây:
-        </div>
-      </div>
-      <div class="print-option-card" onclick="saveAndPrint()">
-        <div class="print-option-icon save">📤</div>
-        <div class="print-option-info">
-          <h3>Lưu & In qua Epson App</h3>
-          <p>Chia sẻ ảnh → mở trong <b>Epson TM Utility</b> hoặc <b>Epson iPrint</b> → In</p>
-        </div>
-      </div>
-      <div class="print-option-card" onclick="printViaEpson()">
-        <div class="print-option-icon bluetooth">🌐</div>
-        <div class="print-option-info">
-          <h3>In trực tiếp qua WiFi</h3>
-          <p>${hasPrinterIP ? `IP: <b>${S.printerIP}</b> — nhấn để in ngay!` : 'Nhập IP máy in (cần kết nối WiFi cùng mạng)'}</p>
-        </div>
-      </div>
-      <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
-      <div style="font-size:11px;color:var(--text-muted);text-align:center;line-height:1.6;padding:4px 0">
-        💡 Tải <b>Epson TM Utility</b> từ App Store nếu chưa có.<br>
-        Hoặc kết nối máy in vào WiFi để in trực tiếp qua IP.
-      </div>
-    </div>
-  `;
-}
 
 function viewGalleryItem(id) {
   const item = S.gallery.find(g => g.id === id);
@@ -965,6 +1229,8 @@ window.shareStrip = shareStrip;
 window.showPrintOptions = showPrintOptions;
 window.printViaBrowser = saveAndPrint; // legacy alias
 window.saveAndPrint = saveAndPrint;
+window.printViaBluetooth = printViaBluetooth;
+window.printViaSystem = printViaSystem;
 window.printViaEpson = printViaEpson;
 window.showPrinterIPSetup = showPrinterIPSetup;
 window.savePrinterIPAndPrint = savePrinterIPAndPrint;
