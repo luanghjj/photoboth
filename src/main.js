@@ -630,15 +630,20 @@ async function showPrintOptions() {
   const mobile = isMobile();
   const hasBluetooth = !!navigator.bluetooth;
 
+  // Simulator card (always shown)
+  const simulatorCard = `
+    <div class="print-option-card" onclick="printSimulator()">
+      <div class="print-option-icon" style="background:linear-gradient(135deg,#a855f7,#6366f1)">🧪</div>
+      <div class="print-option-info">
+        <h3>Giả lập máy in</h3>
+        <p>Xem trước kết quả in trên giấy nhiệt 80mm (không cần máy in)</p>
+      </div>
+    </div>
+  `;
+
   if (mobile) {
-    // MOBILE: Save/Share + ePOS WiFi
     actions.innerHTML = `
       <div class="full-width" style="display:flex;flex-direction:column;gap:10px">
-        <div style="text-align:center;padding:4px 0 8px">
-          <div style="font-size:12px;color:var(--text-muted);line-height:1.5">
-            📱 Trên điện thoại:
-          </div>
-        </div>
         <div class="print-option-card" onclick="saveAndPrint()">
           <div class="print-option-icon save">📤</div>
           <div class="print-option-info">
@@ -653,18 +658,13 @@ async function showPrintOptions() {
             <p>${hasPrinterIP ? `IP: <b>${S.printerIP}</b> — nhấn để in!` : 'Nhập IP máy in khi có WiFi'}</p>
           </div>
         </div>
+        ${simulatorCard}
         <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
       </div>
     `;
   } else {
-    // DESKTOP (Mac/Windows): System Print + Bluetooth + ePOS
     actions.innerHTML = `
       <div class="full-width" style="display:flex;flex-direction:column;gap:10px">
-        <div style="text-align:center;padding:4px 0 8px">
-          <div style="font-size:12px;color:var(--text-muted);line-height:1.5">
-            💻 Trên máy tính:
-          </div>
-        </div>
         <div class="print-option-card" onclick="printViaSystem()">
           <div class="print-option-icon save">🖨️</div>
           <div class="print-option-info">
@@ -688,10 +688,255 @@ async function showPrintOptions() {
             <p>${hasPrinterIP ? `IP: <b>${S.printerIP}</b> — nhấn để in!` : 'Nhập IP nếu máy in có WiFi'}</p>
           </div>
         </div>
+        ${simulatorCard}
         <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
       </div>
     `;
   }
+}
+
+/**
+ * Thermal Printer Simulator
+ * Shows exactly how the image would look printed on 80mm thermal paper
+ * Renders monochrome with Floyd-Steinberg dithering at 576 dots width
+ */
+async function printSimulator() {
+  if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
+
+  toast('Đang giả lập...', 'info');
+
+  // Convert image to monochrome (same as real printer)
+  const img = await loadImage(S.currentStrip);
+  const canvas = document.createElement('canvas');
+  canvas.width = 576;
+  canvas.height = Math.round((img.height / img.width) * 576);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = imageData.data;
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // Grayscale + Floyd-Steinberg dithering
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    gray[i] = 0.299 * pixels[i*4] + 0.587 * pixels[i*4+1] + 0.114 * pixels[i*4+2];
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const old = gray[idx];
+      const val = old < 128 ? 0 : 255;
+      gray[idx] = val;
+      const err = old - val;
+      if (x + 1 < w) gray[idx + 1] += err * 7 / 16;
+      if (y + 1 < h) {
+        if (x - 1 >= 0) gray[(y+1)*w + x-1] += err * 3 / 16;
+        gray[(y+1)*w + x] += err * 5 / 16;
+        if (x + 1 < w) gray[(y+1)*w + x+1] += err * 1 / 16;
+      }
+    }
+  }
+
+  // Apply dithered result back to canvas
+  for (let i = 0; i < w * h; i++) {
+    const v = gray[i] < 128 ? 0 : 255;
+    pixels[i * 4] = v;
+    pixels[i * 4 + 1] = v;
+    pixels[i * 4 + 2] = v;
+    pixels[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  const thermalDataUrl = canvas.toDataURL('image/png');
+
+  // Open simulator in new window
+  const simHTML = `<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🧪 Giả lập máy in Epson TM-m30II</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, 'Helvetica Neue', sans-serif;
+    background: #1a1a2e;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px;
+    color: #e0e0e0;
+  }
+
+  h1 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #888; margin-bottom: 20px; }
+
+  .printer-body {
+    background: #2d2d3f;
+    border-radius: 20px 20px 8px 8px;
+    padding: 20px 16px 8px;
+    width: 100%;
+    max-width: 380px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+    position: relative;
+  }
+
+  .printer-top {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .printer-brand { font-size: 12px; font-weight: 700; color: #6366f1; letter-spacing: 2px; text-transform: uppercase; }
+  .printer-model { font-size: 11px; color: #555; }
+  .printer-led {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #22c55e;
+    box-shadow: 0 0 8px #22c55e;
+    animation: blink 2s infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.4; } }
+
+  .paper-slot {
+    background: #111;
+    border-radius: 4px;
+    padding: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .receipt {
+    background: #f5f0e8;
+    padding: 8px;
+    animation: printSlide 1.5s ease-out forwards;
+    transform: translateY(-100%);
+    border-bottom-left-radius: 2px;
+    border-bottom-right-radius: 2px;
+    /* Torn edge effect */
+    position: relative;
+  }
+  .receipt::after {
+    content: '';
+    position: absolute;
+    bottom: -6px; left: 0; right: 0; height: 6px;
+    background: linear-gradient(135deg, #f5f0e8 33.33%, transparent 33.33%) -6px 0,
+                linear-gradient(225deg, #f5f0e8 33.33%, transparent 33.33%) -6px 0;
+    background-size: 12px 6px;
+  }
+  @keyframes printSlide {
+    from { transform: translateY(-100%); opacity: 0; }
+    20% { opacity: 1; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+
+  .receipt img {
+    width: 100%;
+    display: block;
+    image-rendering: pixelated;
+  }
+
+  .info-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 16px; width: 100%; max-width: 380px;
+    font-size: 12px; color: #666;
+  }
+
+  .specs {
+    margin-top: 20px;
+    width: 100%; max-width: 380px;
+    background: #2d2d3f;
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .specs h3 { font-size: 14px; margin-bottom: 8px; color: #a855f7; }
+  .spec-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; border-bottom: 1px solid #3a3a4a; }
+  .spec-row:last-child { border: none; }
+  .spec-label { color: #888; }
+  .spec-value { color: #e0e0e0; font-weight: 600; }
+
+  .actions { margin-top: 20px; display: flex; gap: 10px; }
+  button {
+    padding: 12px 24px; border: none; border-radius: 12px;
+    font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+    transition: transform 0.1s;
+  }
+  button:active { transform: scale(0.96); }
+  .btn-save { background: #6366f1; color: white; }
+  .btn-close { background: #3a3a4a; color: #ccc; }
+</style>
+</head><body>
+  <h1>🧪 Giả lập Epson TM-m30II</h1>
+  <p class="subtitle">Đây là hình ảnh sẽ được in trên giấy nhiệt 80mm</p>
+
+  <div class="printer-body">
+    <div class="printer-top">
+      <div>
+        <div class="printer-brand">EPSON</div>
+        <div class="printer-model">TM-m30II · 80mm</div>
+      </div>
+      <div class="printer-led"></div>
+    </div>
+    <div class="paper-slot">
+      <div class="receipt">
+        <img src="${thermalDataUrl}" alt="Thermal Print Preview">
+      </div>
+    </div>
+  </div>
+
+  <div class="info-bar">
+    <span>576 × ${h} dots</span>
+    <span>203 DPI</span>
+    <span>Monochrome</span>
+  </div>
+
+  <div class="specs">
+    <h3>📋 Thông số in</h3>
+    <div class="spec-row">
+      <span class="spec-label">Khổ giấy</span>
+      <span class="spec-value">80mm (72mm printable)</span>
+    </div>
+    <div class="spec-row">
+      <span class="spec-label">Độ phân giải</span>
+      <span class="spec-value">576 × ${h} dots</span>
+    </div>
+    <div class="spec-row">
+      <span class="spec-label">DPI</span>
+      <span class="spec-value">203 DPI</span>
+    </div>
+    <div class="spec-row">
+      <span class="spec-label">Chế độ màu</span>
+      <span class="spec-value">Monochrome (1-bit)</span>
+    </div>
+    <div class="spec-row">
+      <span class="spec-label">Dithering</span>
+      <span class="spec-value">Floyd-Steinberg</span>
+    </div>
+    <div class="spec-row">
+      <span class="spec-label">Kích thước dữ liệu</span>
+      <span class="spec-value">${Math.round(576 * h / 8 / 1024)} KB</span>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn-save" onclick="saveReceipt()">💾 Lưu ảnh giả lập</button>
+    <button class="btn-close" onclick="window.close()">Đóng</button>
+  </div>
+
+  <script>
+  function saveReceipt() {
+    const a = document.createElement('a');
+    a.href = '${thermalDataUrl}';
+    a.download = 'thermal_preview_${Date.now()}.png';
+    a.click();
+  }
+  </script>
+</body></html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) { toast('Popup bị chặn!', 'error'); return; }
+  win.document.write(simHTML);
+  win.document.close();
+  toast('✓ Giả lập đã mở!', 'success');
 }
 
 /**
@@ -1333,6 +1578,7 @@ window.show = show;
 window.render = render;
 window.triggerUpload = triggerUpload;
 window.handleUpload = handleUpload;
+window.printSimulator = printSimulator;
 
 // ===== INIT =====
 loadGallery();
