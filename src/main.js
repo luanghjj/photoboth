@@ -358,178 +358,39 @@ function downloadStrip() {
 // ===== PRINT =====
 
 /**
- * Method 1: Browser Print — opens print page optimized for iOS/Android
- * On iOS, @page CSS is IGNORED — so we size the image to fill the viewport
- * and provide step-by-step instructions for setting up the thermal printer
+ * Share/Save photo strip image so user can print via Epson TM Utility app
+ * This is the most reliable method for iOS + TM-m30II (not AirPrint compatible)
  */
-function printViaBrowser() {
+async function saveAndPrint() {
   if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
 
-  const printHTML = `<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>In Photo Strip</title>
-<style>
-  @page { margin: 0; size: 80mm auto; }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, 'Helvetica Neue', sans-serif;
-    background: #f2f2f7;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 20px 16px;
-    padding-bottom: 40px;
-  }
+  try {
+    const blob = await (await fetch(S.currentStrip)).blob();
+    const file = new File([blob], 'photobooth.jpg', { type: 'image/jpeg' });
 
-  .preview-img {
-    width: 100%;
-    max-width: 280px;
-    border-radius: 8px;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.15);
-    display: block;
-    margin-bottom: 20px;
-  }
+    // Try native share (iOS Share Sheet → can send to Epson app)
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: S.stripTitle || 'Photo Booth',
+      });
+      toast('✓ Đã chia sẻ!', 'success');
+      return;
+    }
 
-  .actions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 340px; }
-  .btn {
-    display: flex; align-items: center; justify-content: center; gap: 8px;
-    padding: 15px 20px; border: none; border-radius: 14px;
-    font-size: 16px; font-weight: 600; cursor: pointer;
-    font-family: inherit; -webkit-tap-highlight-color: transparent;
-  }
-  .btn:active { opacity: 0.85; transform: scale(0.98); }
-  .btn-primary { background: #007AFF; color: white; }
-  .btn-green { background: #34C759; color: white; }
-  .btn-secondary { background: white; color: #1c1c1e; border: 1px solid #d1d1d6; }
-
-  .guide {
-    width: 100%; max-width: 340px;
-    background: white; border-radius: 14px;
-    padding: 16px; margin-top: 16px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-  }
-  .guide h3 { font-size: 15px; font-weight: 700; margin-bottom: 12px; color: #1c1c1e; }
-  .step {
-    display: flex; gap: 10px; margin-bottom: 10px;
-    font-size: 14px; color: #3c3c43; line-height: 1.5;
-  }
-  .step-num {
-    width: 24px; height: 24px; border-radius: 50%;
-    background: #007AFF; color: white; font-size: 13px;
-    font-weight: 700; display: flex; align-items: center;
-    justify-content: center; flex-shrink: 0; margin-top: 1px;
-  }
-  .step-text b { color: #1c1c1e; }
-
-  @media print {
-    body { background: white; padding: 0; margin: 0; }
-    .no-print { display: none !important; }
-    .preview-img {
-      max-width: none; width: 100%;
-      border-radius: 0; box-shadow: none;
-      page-break-inside: avoid;
+    // Fallback: download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `photobooth_${Date.now()}.jpg`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('✓ Đã tải xuống! Mở ảnh → In qua Epson app', 'success');
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      toast('Lỗi: ' + e.message, 'error');
     }
   }
-</style>
-</head><body>
-  <img src="${S.currentStrip}" class="preview-img" alt="Photo Strip">
-
-  <div class="actions no-print">
-    <button class="btn btn-primary" onclick="window.print()">🖨️ Mở hộp thoại In</button>
-    <button class="btn btn-green" id="save-btn" onclick="saveImage()">💾 Lưu ảnh → In từ Thư viện</button>
-    <button class="btn btn-secondary" onclick="window.close()">← Quay lại</button>
-  </div>
-
-  <div class="guide no-print">
-    <h3>📋 Hướng dẫn in trên máy Epson</h3>
-    <div class="step">
-      <div class="step-num">1</div>
-      <div class="step-text">Nhấn <b>"Mở hộp thoại In"</b> ở trên</div>
-    </div>
-    <div class="step">
-      <div class="step-num">2</div>
-      <div class="step-text">Chạm vào <b>"Máy in"</b> → chọn <b>TM-m30II</b> (đã kết nối Bluetooth)</div>
-    </div>
-    <div class="step">
-      <div class="step-num">3</div>
-      <div class="step-text">Chạm <b>"Khổ giấy"</b> → đổi từ A4 sang <b>Roll Paper 80mm</b> hoặc <b>80 x 297mm</b></div>
-    </div>
-    <div class="step">
-      <div class="step-num">4</div>
-      <div class="step-text">Đặt <b>Định tỷ lệ</b> = <b>100%</b>, kiểm tra xem ảnh hiện <b>1 trang</b></div>
-    </div>
-    <div class="step">
-      <div class="step-num">5</div>
-      <div class="step-text">Nhấn <b>"In"</b> ✓</div>
-    </div>
-  </div>
-
-  <div class="guide no-print" style="margin-top:12px">
-    <h3>💡 Cách 2: In từ Thư viện ảnh</h3>
-    <div class="step">
-      <div class="step-num">1</div>
-      <div class="step-text">Nhấn <b>"Lưu ảnh"</b> ở trên để tải về Thư viện</div>
-    </div>
-    <div class="step">
-      <div class="step-num">2</div>
-      <div class="step-text">Mở <b>Ảnh (Photos)</b> → chọn ảnh vừa lưu</div>
-    </div>
-    <div class="step">
-      <div class="step-num">3</div>
-      <div class="step-text">Nhấn nút <b>Chia sẻ ↗</b> → <b>In (Print)</b></div>
-    </div>
-    <div class="step">
-      <div class="step-num">4</div>
-      <div class="step-text">Chọn <b>TM-m30II</b> → khổ <b>Roll 80mm</b> → <b>In</b></div>
-    </div>
-  </div>
-
-  <script>
-  async function saveImage() {
-    const btn = document.getElementById('save-btn');
-    try {
-      const img = document.querySelector('.preview-img');
-      const resp = await fetch(img.src);
-      const blob = await resp.blob();
-
-      // Try Web Share API (saves to Photos on iOS)
-      if (navigator.share && navigator.canShare) {
-        const file = new File([blob], 'photobooth.jpg', { type: 'image/jpeg' });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({ files: [file], title: 'Photo Booth' });
-          btn.textContent = '✅ Đã lưu!';
-          return;
-        }
-      }
-
-      // Fallback: download link
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'photobooth_' + Date.now() + '.jpg';
-      a.click();
-      URL.revokeObjectURL(url);
-      btn.textContent = '✅ Đã tải xuống!';
-    } catch(e) {
-      if (e.name !== 'AbortError') {
-        btn.textContent = '❌ Lỗi, thử lại';
-        setTimeout(() => { btn.textContent = '💾 Lưu ảnh → In từ Thư viện'; }, 2000);
-      }
-    }
-  }
-  </script>
-</body></html>`;
-
-  const win = window.open('', '_blank');
-  if (!win) {
-    toast('Popup bị chặn. Cho phép popup rồi thử lại.', 'error');
-    return;
-  }
-  win.document.write(printHTML);
-  win.document.close();
 }
 
 /**
@@ -861,17 +722,17 @@ function renderPreviewScreen() {
     </div>
 
     <div class="preview-actions">
+      <button class="btn btn-accent full-width" onclick="showPrintOptions()">
+        <span class="icon">🖨️</span> In ảnh
+      </button>
       <button class="btn btn-ghost" onclick="downloadCurrentStrip()">
         <span class="icon">⬇️</span> Tải xuống
       </button>
       <button class="btn btn-ghost" onclick="saveAndShowToast()">
-        <span class="icon">💾</span> Lưu
+        <span class="icon">💾</span> Lưu Gallery
       </button>
       <button class="btn btn-ghost" onclick="shareStrip()">
         <span class="icon">↗️</span> Chia sẻ
-      </button>
-      <button class="btn btn-accent" onclick="showPrintOptions()">
-        <span class="icon">🖨️</span> In ảnh
       </button>
     </div>
   </div>`;
@@ -992,7 +853,6 @@ async function shareStrip() {
 async function showPrintOptions() {
   await composeStrip();
 
-  // Show print options modal inline
   const actions = $('.preview-actions');
   if (!actions) return;
 
@@ -1000,21 +860,31 @@ async function showPrintOptions() {
 
   actions.innerHTML = `
     <div class="full-width" style="display:flex;flex-direction:column;gap:10px">
-      <div class="print-option-card" onclick="printViaBrowser()">
-        <div class="print-option-icon browser">🖨️</div>
+      <div style="text-align:center;padding:4px 0 8px">
+        <div style="font-size:12px;color:var(--text-muted);line-height:1.5">
+          ⚠️ TM-m30II không hỗ trợ AirPrint.<br>
+          Dùng 1 trong 2 cách dưới đây:
+        </div>
+      </div>
+      <div class="print-option-card" onclick="saveAndPrint()">
+        <div class="print-option-icon save">📤</div>
         <div class="print-option-info">
-          <h3>In qua điện thoại</h3>
-          <p>Chọn TM-m30II đã kết nối Bluetooth/WiFi trong danh sách máy in. Khổ 80mm.</p>
+          <h3>Lưu & In qua Epson App</h3>
+          <p>Chia sẻ ảnh → mở trong <b>Epson TM Utility</b> hoặc <b>Epson iPrint</b> → In</p>
         </div>
       </div>
       <div class="print-option-card" onclick="printViaEpson()">
         <div class="print-option-icon bluetooth">🌐</div>
         <div class="print-option-info">
-          <h3>In trực tiếp (ePOS Network)</h3>
-          <p>${hasPrinterIP ? `IP: ${S.printerIP} — In trực tiếp không cần chọn máy in` : 'Nhập IP máy in để in trực tiếp qua WiFi'}</p>
+          <h3>In trực tiếp qua WiFi</h3>
+          <p>${hasPrinterIP ? `IP: <b>${S.printerIP}</b> — nhấn để in ngay!` : 'Nhập IP máy in (cần kết nối WiFi cùng mạng)'}</p>
         </div>
       </div>
       <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
+      <div style="font-size:11px;color:var(--text-muted);text-align:center;line-height:1.6;padding:4px 0">
+        💡 Tải <b>Epson TM Utility</b> từ App Store nếu chưa có.<br>
+        Hoặc kết nối máy in vào WiFi để in trực tiếp qua IP.
+      </div>
     </div>
   `;
 }
@@ -1093,7 +963,8 @@ window.downloadCurrentStrip = downloadCurrentStrip;
 window.saveAndShowToast = saveAndShowToast;
 window.shareStrip = shareStrip;
 window.showPrintOptions = showPrintOptions;
-window.printViaBrowser = printViaBrowser;
+window.printViaBrowser = saveAndPrint; // legacy alias
+window.saveAndPrint = saveAndPrint;
 window.printViaEpson = printViaEpson;
 window.showPrinterIPSetup = showPrinterIPSetup;
 window.savePrinterIPAndPrint = savePrinterIPAndPrint;
