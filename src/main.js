@@ -358,91 +358,169 @@ function downloadStrip() {
 // ===== PRINT =====
 
 /**
- * Method 1: Browser Print — opens print dialog on phone
- * User selects their already-paired TM-m30II from the OS printer list
- * Formats the page exactly for 80mm thermal paper (72mm printable)
+ * Method 1: Browser Print — opens print page optimized for iOS/Android
+ * On iOS, @page CSS is IGNORED — so we size the image to fill the viewport
+ * and provide step-by-step instructions for setting up the thermal printer
  */
 function printViaBrowser() {
   if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
 
-  // Create a new window with the image formatted for 80mm thermal paper
   const printHTML = `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Print Photo Strip</title>
+<title>In Photo Strip</title>
 <style>
-  /* Page setup for 80mm thermal receipt paper */
-  @page {
-    size: 80mm auto;
-    margin: 0;
-  }
+  @page { margin: 0; size: 80mm auto; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body {
-    width: 80mm;
-    margin: 0;
-    padding: 0;
-    background: white;
-  }
   body {
+    font-family: -apple-system, 'Helvetica Neue', sans-serif;
+    background: #f2f2f7;
+    min-height: 100vh;
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 2mm;
+    padding: 20px 16px;
+    padding-bottom: 40px;
   }
-  img {
-    width: 76mm;    /* 80mm paper - 2mm margin each side */
-    max-width: 100%;
-    height: auto;
+
+  .preview-img {
+    width: 100%;
+    max-width: 280px;
+    border-radius: 8px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.15);
     display: block;
+    margin-bottom: 20px;
   }
-  /* Hide the print button when actually printing */
+
+  .actions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 340px; }
+  .btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 15px 20px; border: none; border-radius: 14px;
+    font-size: 16px; font-weight: 600; cursor: pointer;
+    font-family: inherit; -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { opacity: 0.85; transform: scale(0.98); }
+  .btn-primary { background: #007AFF; color: white; }
+  .btn-green { background: #34C759; color: white; }
+  .btn-secondary { background: white; color: #1c1c1e; border: 1px solid #d1d1d6; }
+
+  .guide {
+    width: 100%; max-width: 340px;
+    background: white; border-radius: 14px;
+    padding: 16px; margin-top: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .guide h3 { font-size: 15px; font-weight: 700; margin-bottom: 12px; color: #1c1c1e; }
+  .step {
+    display: flex; gap: 10px; margin-bottom: 10px;
+    font-size: 14px; color: #3c3c43; line-height: 1.5;
+  }
+  .step-num {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: #007AFF; color: white; font-size: 13px;
+    font-weight: 700; display: flex; align-items: center;
+    justify-content: center; flex-shrink: 0; margin-top: 1px;
+  }
+  .step-text b { color: #1c1c1e; }
+
   @media print {
+    body { background: white; padding: 0; margin: 0; }
     .no-print { display: none !important; }
-    body { padding: 0; width: 80mm; }
-    img { width: 80mm; }
-  }
-  /* On-screen styling (before user hits print) */
-  @media screen {
-    html, body { width: 100%; background: #f5f5f5; }
-    body { padding: 16px; align-items: center; min-height: 100vh; }
-    img {
-      max-width: 320px;
-      width: 100%;
-      border-radius: 4px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-    }
-    .no-print {
-      margin-top: 16px;
-      padding: 14px 32px;
-      background: #1a1a1a;
-      color: white;
-      border: none;
-      border-radius: 12px;
-      font-size: 16px;
-      font-weight: 600;
-      cursor: pointer;
-      font-family: -apple-system, sans-serif;
-    }
-    .no-print:active { opacity: 0.8; }
-    .print-hint {
-      margin-top: 12px;
-      font-size: 13px;
-      color: #888;
-      text-align: center;
-      line-height: 1.6;
-      font-family: -apple-system, sans-serif;
-      max-width: 300px;
+    .preview-img {
+      max-width: none; width: 100%;
+      border-radius: 0; box-shadow: none;
+      page-break-inside: avoid;
     }
   }
 </style>
 </head><body>
-  <img src="${S.currentStrip}" alt="Photo Strip">
-  <button class="no-print" onclick="window.print()">🖨️ In ảnh</button>
-  <p class="no-print print-hint">
-    Chọn máy in <strong>TM-m30II</strong> từ danh sách.<br>
-    Khổ giấy: <strong>80mm</strong> · Lề: <strong>Không</strong>
-  </p>
+  <img src="${S.currentStrip}" class="preview-img" alt="Photo Strip">
+
+  <div class="actions no-print">
+    <button class="btn btn-primary" onclick="window.print()">🖨️ Mở hộp thoại In</button>
+    <button class="btn btn-green" id="save-btn" onclick="saveImage()">💾 Lưu ảnh → In từ Thư viện</button>
+    <button class="btn btn-secondary" onclick="window.close()">← Quay lại</button>
+  </div>
+
+  <div class="guide no-print">
+    <h3>📋 Hướng dẫn in trên máy Epson</h3>
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-text">Nhấn <b>"Mở hộp thoại In"</b> ở trên</div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-text">Chạm vào <b>"Máy in"</b> → chọn <b>TM-m30II</b> (đã kết nối Bluetooth)</div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-text">Chạm <b>"Khổ giấy"</b> → đổi từ A4 sang <b>Roll Paper 80mm</b> hoặc <b>80 x 297mm</b></div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-text">Đặt <b>Định tỷ lệ</b> = <b>100%</b>, kiểm tra xem ảnh hiện <b>1 trang</b></div>
+    </div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-text">Nhấn <b>"In"</b> ✓</div>
+    </div>
+  </div>
+
+  <div class="guide no-print" style="margin-top:12px">
+    <h3>💡 Cách 2: In từ Thư viện ảnh</h3>
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-text">Nhấn <b>"Lưu ảnh"</b> ở trên để tải về Thư viện</div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-text">Mở <b>Ảnh (Photos)</b> → chọn ảnh vừa lưu</div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-text">Nhấn nút <b>Chia sẻ ↗</b> → <b>In (Print)</b></div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-text">Chọn <b>TM-m30II</b> → khổ <b>Roll 80mm</b> → <b>In</b></div>
+    </div>
+  </div>
+
+  <script>
+  async function saveImage() {
+    const btn = document.getElementById('save-btn');
+    try {
+      const img = document.querySelector('.preview-img');
+      const resp = await fetch(img.src);
+      const blob = await resp.blob();
+
+      // Try Web Share API (saves to Photos on iOS)
+      if (navigator.share && navigator.canShare) {
+        const file = new File([blob], 'photobooth.jpg', { type: 'image/jpeg' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'Photo Booth' });
+          btn.textContent = '✅ Đã lưu!';
+          return;
+        }
+      }
+
+      // Fallback: download link
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'photobooth_' + Date.now() + '.jpg';
+      a.click();
+      URL.revokeObjectURL(url);
+      btn.textContent = '✅ Đã tải xuống!';
+    } catch(e) {
+      if (e.name !== 'AbortError') {
+        btn.textContent = '❌ Lỗi, thử lại';
+        setTimeout(() => { btn.textContent = '💾 Lưu ảnh → In từ Thư viện'; }, 2000);
+      }
+    }
+  }
+  </script>
 </body></html>`;
 
   const win = window.open('', '_blank');
