@@ -1048,15 +1048,31 @@ function renderGalleryScreen() {
         <span class="icon">←</span> Về
       </button>
       <div class="preview-title">Gallery</div>
-      <div style="width:60px"></div>
+      <button class="btn btn-sm btn-ghost" onclick="triggerUpload()">
+        <span class="icon">📁</span> Tải lên
+      </button>
     </div>
+
+    <input type="file" id="upload-input" accept="image/*" multiple
+           style="display:none" onchange="handleUpload(this)">
 
     ${S.gallery.length === 0 ? `
       <div class="gallery-empty">
         <div class="icon">🖼️</div>
-        <p>Chưa có ảnh nào.<br>Bắt đầu chụp để tạo photo strip!</p>
+        <p>Chưa có ảnh nào.</p>
+        <button class="btn btn-accent" onclick="triggerUpload()" style="margin-top:16px">
+          <span class="icon">📁</span> Tải ảnh lên từ máy
+        </button>
+        <button class="btn btn-ghost" onclick="startSession()" style="margin-top:8px">
+          <span class="icon">📸</span> Hoặc chụp mới
+        </button>
       </div>
     ` : `
+      <div style="padding:8px 16px">
+        <button class="btn btn-accent btn-block" onclick="triggerUpload()">
+          <span class="icon">📁</span> Tải thêm ảnh
+        </button>
+      </div>
       <div class="gallery-grid">
         ${S.gallery.map(g => `
           <div class="gallery-item" onclick="viewGalleryItem('${g.id}')">
@@ -1206,7 +1222,80 @@ async function printGalleryItem(id) {
   const item = S.gallery.find(g => g.id === id);
   if (!item) return;
   S.currentStrip = item.dataUrl;
-  printViaBrowser();
+  showPrintOptions();
+}
+
+/**
+ * Trigger file upload input
+ */
+function triggerUpload() {
+  const input = document.getElementById('upload-input');
+  if (input) {
+    input.click();
+  } else {
+    // Create one on the fly (for home screen)
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.multiple = true;
+    inp.style.display = 'none';
+    inp.onchange = () => handleUpload(inp);
+    document.body.appendChild(inp);
+    inp.click();
+    setTimeout(() => inp.remove(), 60000);
+  }
+}
+
+/**
+ * Handle uploaded files — add each to gallery
+ */
+async function handleUpload(input) {
+  const files = input.files;
+  if (!files || files.length === 0) return;
+
+  toast(`Đang tải ${files.length} ảnh...`, 'info');
+
+  let count = 0;
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) continue;
+
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+
+      const item = {
+        id: 'upload_' + Date.now() + '_' + count,
+        dataUrl: dataUrl,
+        date: new Date().toISOString(),
+        title: file.name.replace(/\.[^/.]+$/, '') || 'Uploaded',
+      };
+
+      S.gallery.unshift(item);
+      count++;
+    } catch (e) {
+      console.error('Upload error:', e);
+    }
+  }
+
+  if (count > 0) {
+    localStorage.setItem('photobooth_gallery', JSON.stringify(S.gallery));
+    toast(`✓ Đã tải lên ${count} ảnh!`, 'success');
+    show('gallery');
+  }
+
+  // Reset input
+  input.value = '';
+}
+
+/**
+ * Read file as data URL
+ */
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 function openGallery() {
@@ -1242,6 +1331,8 @@ window.shareGalleryItem = shareGalleryItem;
 window.printGalleryItem = printGalleryItem;
 window.show = show;
 window.render = render;
+window.triggerUpload = triggerUpload;
+window.handleUpload = handleUpload;
 
 // ===== INIT =====
 loadGallery();
