@@ -959,12 +959,20 @@ function render() {
 function renderHome() {
   const connected = S.printerConnected;
   const hasIP = !!S.printerIP;
+  const proto = S._printerProto ? `(${S._printerProto}:${S._printerPort})` : '';
   return `
   <div class="screen active home-screen" id="screen-home">
     <div class="printer-status ${connected ? 'connected' : 'disconnected'}" onclick="W.show('setup')">
       <div class="dot"></div>
-      ${connected ? `Máy in: ${S.printerIP}` : (hasIP ? `⚠ ${S.printerIP} — chưa kết nối` : '🔌 Chưa cài đặt máy in')}
+      ${connected 
+        ? `✅ Máy in: ${S.printerIP} ${proto}` 
+        : (hasIP ? `⚠ ${S.printerIP} — chưa kết nối` : '🔌 Chưa cài đặt máy in')}
     </div>
+    ${hasIP && !connected ? `
+    <div style="display:flex;gap:8px;width:100%;max-width:320px">
+      <button class="btn btn-sm btn-ghost" style="flex:1" onclick="W.retryConnection()">🔄 Thử kết nối lại</button>
+      <button class="btn btn-sm btn-ghost" style="flex:1" onclick="W.openSSLCert()">🔒 Mở SSL</button>
+    </div>` : ''}
     <div class="home-logo">📸</div>
     <div class="home-title">Photo Booth</div>
     <div class="home-subtitle">Chụp · In · Chia sẻ</div>
@@ -1394,6 +1402,19 @@ function setTitle(val) {
   S.stripTitle = val;
   S.currentStrip = null;
 }
+async function retryConnection() {
+  if (!S.printerIP) { show('setup'); return; }
+  toast('Đang thử kết nối...', 'info');
+  S._printerProto = null;
+  const ok = await testPrinterConnection(S.printerIP);
+  S.printerConnected = ok;
+  if (ok) {
+    toast(`✅ Kết nối OK qua ${S._printerProto}:${S._printerPort}!`, 'success');
+  } else {
+    toast('❌ Chưa kết nối — thử nhấn 🔒 Mở SSL trước', 'error');
+  }
+  render();
+}
 function doPrintEpson() {
   if (!S.printerIP) { show('setup'); return; }
   printViaEpson();
@@ -1408,7 +1429,7 @@ const W = {
   setStyle, setFrame, setTitle,
   downloadStrip, saveStripToGallery, shareStrip,
   doPrintEpson, openSimulator, printViaSystem, printViaBluetooth,
-  savePrinterIP, openSSLCert, triggerUpload,
+  savePrinterIP, openSSLCert, retryConnection, triggerUpload,
   viewGalleryItem, deleteFromGallery,
 };
 window.W = W;
