@@ -90,6 +90,7 @@ function saveGallery() {
 async function startCamera() {
   try {
     if (S.stream) { S.stream.getTracks().forEach(t => t.stop()); }
+    if (S._faceDetectTimer) { clearInterval(S._faceDetectTimer); S._faceDetectTimer = null; }
     S.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 960 } },
       audio: false,
@@ -99,6 +100,8 @@ async function startCamera() {
       video.srcObject = S.stream;
       video.setAttribute('playsinline', 'true');
       video.play();
+      // Start face detection overlay after video is ready
+      video.addEventListener('loadeddata', () => startFaceDetectionOverlay(), { once: true });
     }
   } catch (err) {
     toast('Không thể mở camera: ' + err.message, 'error');
@@ -108,6 +111,70 @@ async function startCamera() {
 function stopCamera() {
   if (S.stream) { S.stream.getTracks().forEach(t => t.stop()); S.stream = null; }
   if (S.autoTimer) { clearTimeout(S.autoTimer); S.autoTimer = null; }
+  if (S._faceDetectTimer) { clearInterval(S._faceDetectTimer); S._faceDetectTimer = null; }
+}
+
+/** Live face detection overlay on viewfinder */
+function startFaceDetectionOverlay() {
+  if (!('FaceDetector' in window)) return;
+  
+  const detector = new FaceDetector({ fastMode: true, maxDetectedFaces: 10 });
+  
+  S._faceDetectTimer = setInterval(async () => {
+    const video = $('#viewfinder');
+    const overlay = $('#face-overlay');
+    if (!video || !overlay || video.paused) return;
+    
+    try {
+      const faces = await detector.detect(video);
+      const octx = overlay.getContext('2d');
+      overlay.width = video.videoWidth;
+      overlay.height = video.videoHeight;
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+      
+      for (const face of faces) {
+        let { x, y, width, height } = face.boundingBox;
+        
+        // Mirror for front camera
+        if (S.facing === 'user') {
+          x = overlay.width - x - width;
+        }
+        
+        // Expand box slightly
+        const pad = width * 0.12;
+        x -= pad; y -= pad; width += pad * 2; height += pad * 2;
+        
+        // Glow effect
+        octx.shadowColor = 'rgba(100, 255, 160, 0.6)';
+        octx.shadowBlur = 12;
+        octx.strokeStyle = 'rgba(100, 255, 160, 0.7)';
+        octx.lineWidth = 2;
+        octx.beginPath();
+        octx.roundRect(x, y, width, height, 12);
+        octx.stroke();
+        
+        // Corner accents
+        octx.shadowBlur = 0;
+        octx.strokeStyle = '#5eff8a';
+        octx.lineWidth = 3;
+        const cornerLen = 18;
+        // Top-left
+        octx.beginPath(); octx.moveTo(x, y + cornerLen); octx.lineTo(x, y); octx.lineTo(x + cornerLen, y); octx.stroke();
+        // Top-right
+        octx.beginPath(); octx.moveTo(x + width - cornerLen, y); octx.lineTo(x + width, y); octx.lineTo(x + width, y + cornerLen); octx.stroke();
+        // Bottom-left
+        octx.beginPath(); octx.moveTo(x, y + height - cornerLen); octx.lineTo(x, y + height); octx.lineTo(x + cornerLen, y + height); octx.stroke();
+        // Bottom-right
+        octx.beginPath(); octx.moveTo(x + width - cornerLen, y + height); octx.lineTo(x + width, y + height); octx.lineTo(x + width, y + height - cornerLen); octx.stroke();
+      }
+      
+      // Show face count
+      if (faces.length > 0) {
+        const badge = $('#face-count');
+        if (badge) badge.textContent = `👤 ${faces.length}`;
+      }
+    } catch { /* ignore detection errors */ }
+  }, 500);
 }
 
 function flipCamera() {
@@ -168,13 +235,102 @@ function capturePhoto() {
   ctx.filter = getFilterCSS(S.filter);
   ctx.drawImage(video, 0, 0);
 
-  S.photos.push(canvas.toDataURL('image/jpeg', 0.92));
-  renderCameraUI();
+  // Face detection + brightening (async, non-blocking)
+  enhanceFaces(canvas).then(enhancedUrl => {
+    S.photos.push(enhancedUrl);
+    renderCameraUI();
 
-  if (S.photos.length >= S.maxPhotos) {
-    stopCamera();
-    show('preview');
+    if (S.photos.length >= S.maxPhotos) {
+      stopCamera();
+      show('preview');
+    }
+  });
+}
+
+/**
+ * Face Detection + Brightening System
+ * Detects faces using browser FaceDetector API, then applies:
+ * 1. Radial brightness boost on each face
+ * 2. Soft glow effect for flattering look
+ * 3. Subtle warm toning on skin areas
+ */
+async function enhanceFaces(canvas) {
+  const ctx = canvas.getContext('2d');
+  
+  try {
+    // Try browser FaceDetector API (Chrome, Edge, Android)
+    if ('FaceDetector' in window) {
+      const detector = new FaceDetector({ fastMode: true, maxDetectedFaces: 10 });
+      const faces = await detector.detect(canvas);
+      
+      if (faces.length > 0) {
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const px = imgData.data;
+
+        for (const face of faces) {
+          const box = face.boundingBox;
+          // Expand face region slightly for better coverage
+          const cx = box.x + box.width / 2;
+          const cy = box.y + box.height / 2;
+          const rx = box.width * 0.7;  // radius X
+          const ry = box.height * 0.7; // radius Y
+
+          // Process pixels in the face region
+          for (let y = Math.max(0, Math.floor(cy - ry)); y < Math.min(canvas.height, Math.ceil(cy + ry)); y++) {
+            for (let x = Math.max(0, Math.floor(cx - rx)); x < Math.min(canvas.width, Math.ceil(cx + rx)); x++) {
+              // Distance from center (elliptical)
+              const dx = (x - cx) / rx;
+              const dy = (y - cy) / ry;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              
+              if (dist > 1.0) continue; // Outside face ellipse
+              
+              // Smooth falloff: stronger in center, fading at edges
+              const strength = Math.cos(dist * Math.PI * 0.5); // 1.0 at center → 0.0 at edge
+              
+              const i = (y * canvas.width + x) * 4;
+              const r = px[i], g = px[i+1], b = px[i+2];
+              
+              // 1. Brightness boost (15-25%)
+              const brighten = 1 + 0.20 * strength;
+              
+              // 2. Slight warm tone (add tiny red/yellow, reduce blue)
+              const warmR = 8 * strength;
+              const warmG = 4 * strength;
+              const warmB = -3 * strength;
+              
+              px[i]   = Math.min(255, r * brighten + warmR);
+              px[i+1] = Math.min(255, g * brighten + warmG);
+              px[i+2] = Math.min(255, b * brighten + warmB);
+            }
+          }
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+
+        // Draw subtle glow overlay on each face
+        for (const face of faces) {
+          const box = face.boundingBox;
+          const cx = box.x + box.width / 2;
+          const cy = box.y + box.height / 2;
+          const r = Math.max(box.width, box.height) * 0.6;
+          
+          const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+          grad.addColorStop(0, 'rgba(255, 248, 230, 0.12)');  // Warm center glow
+          grad.addColorStop(0.5, 'rgba(255, 248, 230, 0.06)');
+          grad.addColorStop(1, 'rgba(255, 248, 230, 0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+        }
+
+        console.log(`✨ ${faces.length} face(s) detected & enhanced`);
+      }
+    }
+  } catch (err) {
+    console.log('Face detection not available:', err.message);
   }
+
+  return canvas.toDataURL('image/jpeg', 0.92);
 }
 
 async function startAutoCapture() {
@@ -1241,6 +1397,8 @@ function renderCamera() {
     <div class="viewfinder-wrap">
       <video id="viewfinder" class="viewfinder" autoplay playsinline muted
              style="filter:${getFilterCSS(S.filter)}"></video>
+      <canvas id="face-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2"></canvas>
+      <div id="face-count" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.6);color:#5eff8a;padding:4px 10px;border-radius:20px;font-size:13px;font-weight:600;z-index:3"></div>
       <div class="viewfinder-overlay"></div>
     </div>
 
