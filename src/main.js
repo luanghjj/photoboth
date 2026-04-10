@@ -677,7 +677,7 @@ async function printDankeBeleg() {
 
   try {
     const W = 576; // 80mm paper width in px
-    const H = 700;
+    const H = 960;
     const c = document.createElement('canvas');
     c.width = W; c.height = H;
     const ctx = c.getContext('2d');
@@ -686,95 +686,100 @@ async function printDankeBeleg() {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, W, H);
 
-    // === Top decorative border ===
-    ctx.strokeStyle = '#222';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(16, 12, W - 32, H - 24);
+    // === Outer border — thick ===
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(8, 8, W - 16, H - 16);
 
-    // Inner thin border
-    ctx.lineWidth = 0.5;
-    ctx.strokeRect(22, 18, W - 44, H - 36);
+    // === Inner border — thin ===
+    ctx.lineWidth = 1;
+    ctx.strokeRect(16, 16, W - 32, H - 32);
 
-    // === LOGO — centered ===
+    // === LOGO — large, almost full width ===
     try {
       const logo = await loadImage('/origami-logo.png');
-      const logoW = 340;
+      const logoW = 500;
       const logoH = Math.round((logo.height / logo.width) * logoW);
       const logoX = (W - logoW) / 2;
-      const logoY = 40;
+      const logoY = 50;
       ctx.drawImage(logo, logoX, logoY, logoW, logoH);
 
-      // === Decorative line under logo ===
-      const lineY = logoY + logoH + 20;
-      ctx.strokeStyle = '#333';
-      ctx.lineWidth = 1;
+      // === Thick decorative line under logo ===
+      const lineY = logoY + logoH + 30;
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(60, lineY);
-      ctx.lineTo(W - 60, lineY);
+      ctx.moveTo(40, lineY);
+      ctx.lineTo(W - 40, lineY);
       ctx.stroke();
 
-      // Small dots
-      ctx.fillStyle = '#333';
-      ctx.font = '14px serif';
+      // Ornament dots — bigger
+      ctx.fillStyle = '#222';
+      ctx.font = '22px serif';
       ctx.textAlign = 'center';
-      ctx.fillText('◆  ◆  ◆', W / 2, lineY + 18);
+      ctx.fillText('◆   ◆   ◆', W / 2, lineY + 30);
 
-      // === Thank you message (German) ===
-      const msgY = lineY + 50;
+      // === Thank you message (German) — BIG ===
+      const msgY = lineY + 75;
 
-      ctx.fillStyle = '#1a1a1a';
-      ctx.font = 'bold 22px Georgia, "Times New Roman", serif';
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 36px Georgia, "Times New Roman", serif';
       ctx.textAlign = 'center';
       ctx.fillText('Vielen Dank', W / 2, msgY);
 
-      ctx.font = '17px Georgia, serif';
-      ctx.fillText('für Ihre Bestellung!', W / 2, msgY + 28);
+      ctx.font = '26px Georgia, serif';
+      ctx.fillText('für Ihre Bestellung!', W / 2, msgY + 42);
 
-      // Spacer
-      ctx.fillStyle = '#555';
-      ctx.font = '12px serif';
-      ctx.fillText('─────────────', W / 2, msgY + 55);
-
-      // Friendly message
-      ctx.fillStyle = '#333';
-      ctx.font = 'italic 14px Georgia, serif';
-      ctx.fillText('Wir hoffen, es schmeckt Ihnen!', W / 2, msgY + 80);
-      ctx.fillText('Wir freuen uns auf Ihren', W / 2, msgY + 102);
-      ctx.fillText('nächsten Besuch.', W / 2, msgY + 122);
-
-      // === Separator ===
-      ctx.fillStyle = '#555';
-      ctx.font = '12px serif';
-      ctx.fillText('─────────────', W / 2, msgY + 150);
-
-      // === Social / info ===
+      // Separator
       ctx.fillStyle = '#444';
-      ctx.font = '13px Inter, Arial, sans-serif';
-      ctx.fillText('Ihr ORIGAMI Team', W / 2, msgY + 178);
+      ctx.font = '18px serif';
+      ctx.fillText('───────────────', W / 2, msgY + 82);
 
-      // Date & time
-      ctx.fillStyle = '#888';
-      ctx.font = '11px Inter, Arial, sans-serif';
+      // Friendly message — bigger
+      ctx.fillStyle = '#222';
+      ctx.font = 'italic 22px Georgia, serif';
+      ctx.fillText('Wir hoffen,', W / 2, msgY + 120);
+      ctx.fillText('es schmeckt Ihnen!', W / 2, msgY + 150);
+
+      ctx.font = 'italic 20px Georgia, serif';
+      ctx.fillStyle = '#333';
+      ctx.fillText('Wir freuen uns auf Ihren', W / 2, msgY + 195);
+      ctx.fillText('nächsten Besuch.', W / 2, msgY + 222);
+
+      // Separator
+      ctx.fillStyle = '#444';
+      ctx.font = '18px serif';
+      ctx.fillText('───────────────', W / 2, msgY + 262);
+
+      // === Team signature — big ===
+      ctx.fillStyle = '#111';
+      ctx.font = 'bold 24px Georgia, serif';
+      ctx.fillText('Ihr ORIGAMI Team', W / 2, msgY + 305);
+
+      // Date & time — medium
+      ctx.fillStyle = '#666';
+      ctx.font = '16px Inter, Arial, sans-serif';
       const now = new Date();
       const dateStr = now.toLocaleDateString('de-DE', {
         weekday: 'long', day: '2-digit', month: 'long', year: 'numeric'
       });
       const timeStr = now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-      ctx.fillText(`${dateStr}, ${timeStr} Uhr`, W / 2, msgY + 200);
+      ctx.fillText(`${dateStr}`, W / 2, msgY + 340);
+      ctx.fillText(`${timeStr} Uhr`, W / 2, msgY + 362);
 
       // === Bottom ornament ===
-      ctx.fillStyle = '#333';
-      ctx.font = '14px serif';
-      ctx.fillText('◆  ◆  ◆', W / 2, msgY + 230);
+      ctx.fillStyle = '#222';
+      ctx.font = '22px serif';
+      ctx.fillText('◆   ◆   ◆', W / 2, msgY + 400);
 
     } catch (logoErr) {
       // If logo fails, just print text
-      ctx.fillStyle = '#1a1a1a';
-      ctx.font = 'bold 36px Georgia, serif';
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 48px Georgia, serif';
       ctx.textAlign = 'center';
-      ctx.fillText('ORIGAMI', W / 2, 80);
-      ctx.font = '14px Georgia, serif';
-      ctx.fillText('Sushi & Asian Cuisine', W / 2, 105);
+      ctx.fillText('ORIGAMI', W / 2, 120);
+      ctx.font = '22px Georgia, serif';
+      ctx.fillText('Sushi & Asian Cuisine', W / 2, 155);
     }
 
     // Convert to image and print
