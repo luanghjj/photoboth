@@ -115,14 +115,28 @@ function flipCamera() {
   startCamera();
 }
 
+/** All available filters with CSS values and Vietnamese labels */
+const FILTERS = {
+  none:    { css: 'none',                                                    label: 'Gốc' },
+  bw:      { css: 'grayscale(1)',                                             label: 'B&W' },
+  sepia:   { css: 'sepia(0.8)',                                               label: 'Sepia' },
+  vintage: { css: 'sepia(0.3) contrast(1.1) brightness(1.05)',                label: 'Vintage' },
+  cool:    { css: 'saturate(1.3) hue-rotate(10deg) brightness(1.05)',         label: 'Cool' },
+  warm:    { css: 'saturate(1.2) sepia(0.15) brightness(1.05)',               label: 'Warm' },
+  vivid:   { css: 'saturate(1.8) contrast(1.1) brightness(1.05)',             label: 'Vivid' },
+  fade:    { css: 'saturate(0.6) brightness(1.15) contrast(0.85)',            label: 'Fade' },
+  drama:   { css: 'contrast(1.4) brightness(0.95) saturate(1.1)',             label: 'Drama' },
+  dreamy:  { css: 'brightness(1.1) contrast(0.9) saturate(0.8) blur(0.5px)', label: 'Dreamy' },
+  noir:    { css: 'grayscale(1) contrast(1.4) brightness(0.9)',               label: 'Noir' },
+  glow:    { css: 'brightness(1.2) saturate(1.3) contrast(0.95)',             label: 'Glow' },
+  sunset:  { css: 'sepia(0.25) saturate(1.5) hue-rotate(-10deg) brightness(1.05)', label: 'Sunset' },
+  emerald: { css: 'sepia(0.15) saturate(1.4) hue-rotate(80deg) brightness(1.05)',  label: 'Emerald' },
+  lomo:    { css: 'saturate(1.5) contrast(1.3) brightness(0.9)',              label: 'Lomo' },
+  sketch:  { css: 'grayscale(1) contrast(2) brightness(1.3)',                 label: 'Sketch' },
+};
+
 function getFilterCSS(filter) {
-  const filters = {
-    none: 'none', bw: 'grayscale(1)', sepia: 'sepia(0.8)',
-    vintage: 'sepia(0.3) contrast(1.1) brightness(1.05)',
-    cool: 'saturate(1.3) hue-rotate(10deg) brightness(1.05)',
-    warm: 'saturate(1.2) sepia(0.15) brightness(1.05)',
-  };
-  return filters[filter] || 'none';
+  return FILTERS[filter]?.css || 'none';
 }
 
 function capturePhoto() {
@@ -933,10 +947,8 @@ function renderCamera() {
 
     <div class="camera-controls">
       <div class="filter-bar">
-        ${['none','bw','sepia','vintage','cool','warm'].map(f =>
-          `<div class="filter-chip ${S.filter===f?'active':''}" onclick="W.setFilter('${f}')">${
-            {none:'Gốc',bw:'B&W',sepia:'Sepia',vintage:'Vintage',cool:'Cool',warm:'Warm'}[f]
-          }</div>`
+        ${Object.entries(FILTERS).map(([id, f]) =>
+          `<div class="filter-chip ${S.filter===id?'active':''}" onclick="W.setFilter('${id}')">${f.label}</div>`
         ).join('')}
       </div>
 
