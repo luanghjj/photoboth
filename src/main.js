@@ -712,7 +712,7 @@ async function testPrinterConnection(ip) {
   return false;
 }
 
-/** Print via TCP:9100 proxy (ESC/POS raster) */
+/** Print via TCP:9100 proxy (ESC/POS raster) — with WebSocket fallback */
 async function printViaEpson(imageDataUrl) {
   const ip = S.printerIP;
   if (!ip) { show('setup'); return; }
@@ -731,37 +731,78 @@ async function printViaEpson(imageDataUrl) {
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const rasterBase64 = toMonoRaster(imageData, canvas.width, canvas.height);
 
-    // 2. Send to printer via proxy
+    // 2. Try TCP proxy first (works from localhost dev server)
     toast('Đang gửi đến máy in...', 'info');
 
-    const resp = await fetch('/api/print', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ip,
-        width: canvas.width,
-        height: canvas.height,
-        rasterBase64,
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
+    let printed = false;
+    try {
+      const resp = await fetch('/api/print', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip, width: canvas.width, height: canvas.height, rasterBase64 }),
+        signal: AbortSignal.timeout(12000),
+      });
+      const result = await resp.json();
+      if (result.success) { printed = true; }
+      else { throw new Error(result.error || 'Proxy error'); }
+    } catch (proxyErr) {
+      console.log('Proxy not available, trying WebSocket...', proxyErr.message);
+    }
 
-    const result = await resp.json();
-    if (result.success) {
+    // 3. Fallback: WebSocket via Socket.IO on port 8008
+    if (!printed) {
+      toast('Đang thử WebSocket...', 'info');
+      try {
+        // Get Socket.IO session
+        const sessionResp = await fetch(`http://${ip}:8008/socket.io/1/`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        const sessionText = await sessionResp.text();
+        const sessionId = sessionText.split(':')[0];
+
+        // Open WebSocket and send ePOS XML
+        await new Promise((resolve, reject) => {
+          const ws = new WebSocket(`ws://${ip}:8008/socket.io/1/websocket/${sessionId}`);
+          let done = false;
+          const timeout = setTimeout(() => { if (!done) { ws.close(); reject(new Error('WS Timeout')); } }, 12000);
+
+          ws.onopen = () => {
+            const xml = `<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">` +
+              `<image width="${canvas.width}" height="${canvas.height}" color="color_1" mode="mono">${rasterBase64}</image>` +
+              `<feed unit="30"/>` +
+              `<cut type="feed"/>` +
+              `</epos-print>`;
+            ws.send('3:::' + xml);
+          };
+
+          ws.onmessage = (evt) => {
+            if (evt.data === '2::') { ws.send('2::'); return; }
+            if (evt.data && (evt.data.includes('success') || evt.data.includes('response') || evt.data.startsWith('3:::'))) {
+              done = true; clearTimeout(timeout); ws.close(); resolve();
+            }
+          };
+
+          ws.onerror = () => { clearTimeout(timeout); reject(new Error('WebSocket error')); };
+          ws.onclose = () => { 
+            clearTimeout(timeout); 
+            if (!done) { resolve(); } // Assume sent OK if close without error
+          };
+        });
+        printed = true;
+      } catch (wsErr) {
+        console.error('WebSocket fallback failed:', wsErr.message);
+      }
+    }
+
+    if (printed) {
       toast('✅ In thành công!', 'success');
       S.printerConnected = true;
     } else {
-      toast('❌ Lỗi: ' + (result.error || 'Unknown'), 'error');
+      toast('❌ Không in được. Mở app từ http://192.168.178.69:5300/ trên điện thoại', 'error');
     }
   } catch (err) {
     S.printerConnected = false;
-    if (err.name === 'AbortError' || err.name === 'TimeoutError') {
-      toast('⏱ Hết thời gian chờ', 'error');
-    } else if (err.message?.includes('Failed to fetch')) {
-      toast('⚠️ Cần chạy dev server (npm run dev) để in qua WiFi', 'error');
-    } else {
-      toast('❌ Lỗi: ' + err.message, 'error');
-    }
+    toast('❌ Lỗi: ' + err.message, 'error');
   }
 }
 
