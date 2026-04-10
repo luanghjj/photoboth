@@ -1,711 +1,395 @@
+/**
+ * 📸 Photo Booth — Epson TM-m30II Thermal Printer App
+ * 
+ * Features:
+ * - Camera capture with filters
+ * - Photo strip compositor (576px for 80mm paper)
+ * - Direct print via Epson ePOS XML API (WiFi)
+ * - Gallery with upload support
+ * - Thermal printer simulator
+ */
+
 import './style.css';
 
-// ===== APP STATE =====
+// =============================================
+// STATE
+// =============================================
 const S = {
-  screen: 'home', // home | camera | preview | gallery | print
-  photos: [],     // captured photos (data URLs) for current session
+  screen: 'home',       // home | camera | preview | gallery | setup
+  photos: [],            // captured photo data URLs (max 4)
   maxPhotos: 4,
-  filter: 'none', // none | bw | sepia | vintage | cool | warm
-  stripStyle: 'white', // white | vintage | dark | pink
+  currentStrip: null,    // composed strip data URL
   stripTitle: 'Photo Booth',
-  countdown: 3,
-  gallery: [], // saved strips [{id, dataUrl, date, title}]
-  currentStrip: null, // data URL of composited strip
-  cameraFacing: 'user', // user | environment
-  stream: null,
+  stripStyle: 'white',   // white | vintage | dark | pink
+  filter: 'none',
+  facing: 'user',        // user | environment
+  gallery: [],
+  // Printer
   printerIP: localStorage.getItem('epson_printer_ip') || '',
+  printerConnected: false,
+  // Camera
+  stream: null,
+  autoTimer: null,
 };
 
-// ===== UTILITIES =====
-function $(sel) { return document.querySelector(sel); }
-function $$(sel) { return document.querySelectorAll(sel); }
-function show(id) { S.screen = id; render(); }
+// =============================================
+// HELPERS
+// =============================================
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
 function toast(msg, type = 'info') {
-  const c = $('#toast-container');
-  if (!c) return;
+  const container = document.getElementById('toast-container');
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.innerHTML = `<span>${msg}</span>`;
-  c.appendChild(el);
-  setTimeout(() => { el.classList.add('exit'); setTimeout(() => el.remove(), 300); }, 3000);
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => { el.classList.add('hide'); setTimeout(() => el.remove(), 300); }, 2500);
 }
 
 function formatDate(d) {
   const date = new Date(d);
-  return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
-    ' · ' + date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
-}
-
-// ===== CAMERA =====
-async function startCamera() {
-  try {
-    if (S.stream) {
-      S.stream.getTracks().forEach(t => t.stop());
-    }
-    S.stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: S.cameraFacing,
-        width: { ideal: 1280 },
-        height: { ideal: 960 },
-      },
-      audio: false,
-    });
-    const video = $('#camera-video');
-    if (video) {
-      video.srcObject = S.stream;
-      video.play();
-    }
-  } catch (err) {
-    toast('Không thể truy cập camera: ' + err.message, 'error');
-  }
-}
-
-function stopCamera() {
-  if (S.stream) {
-    S.stream.getTracks().forEach(t => t.stop());
-    S.stream = null;
-  }
-}
-
-function flipCamera() {
-  S.cameraFacing = S.cameraFacing === 'user' ? 'environment' : 'user';
-  startCamera();
-}
-
-function getFilterCSS(filter) {
-  const filters = {
-    none: 'none',
-    bw: 'grayscale(100%) contrast(1.1)',
-    sepia: 'sepia(80%) contrast(1.05)',
-    vintage: 'sepia(40%) contrast(1.1) brightness(0.95) saturate(0.8)',
-    cool: 'saturate(0.8) hue-rotate(15deg) brightness(1.05)',
-    warm: 'saturate(1.2) hue-rotate(-10deg) brightness(1.05) contrast(1.05)',
-  };
-  return filters[filter] || 'none';
-}
-
-function applyFilterToVideo() {
-  const video = $('#camera-video');
-  if (video) {
-    video.style.filter = getFilterCSS(S.filter);
-  }
-}
-
-// Take a single photo
-function capturePhoto() {
-  return new Promise((resolve) => {
-    const video = $('#camera-video');
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-
-    // Mirror for selfie cam
-    if (S.cameraFacing === 'user') {
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-    }
-
-    ctx.filter = getFilterCSS(S.filter);
-    ctx.drawImage(video, 0, 0);
-    ctx.filter = 'none';
-
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-    resolve(dataUrl);
-  });
-}
-
-// Flash effect
-function flash() {
-  const overlay = $('#flash-overlay');
-  if (overlay) {
-    overlay.classList.add('active');
-    setTimeout(() => overlay.classList.remove('active'), 150);
-  }
-}
-
-// Countdown + capture sequence
-async function startCaptureSequence() {
-  const shutterBtn = $('#shutter-btn');
-  if (shutterBtn) shutterBtn.disabled = true;
-
-  for (let photoIdx = S.photos.length; photoIdx < S.maxPhotos; photoIdx++) {
-    // Countdown
-    for (let c = S.countdown; c > 0; c--) {
-      showCountdown(c);
-      await wait(1000);
-    }
-    hideCountdown();
-
-    // Capture
-    flash();
-    const photo = await capturePhoto();
-    S.photos.push(photo);
-
-    // Vibrate
-    if (navigator.vibrate) navigator.vibrate(50);
-
-    // Update thumbnails
-    renderThumbnails();
-    updateCounter();
-
-    if (photoIdx < S.maxPhotos - 1) {
-      await wait(800); // Brief pause between photos
-    }
-  }
-
-  if (shutterBtn) shutterBtn.disabled = false;
-
-  // All photos taken — go to preview
-  if (S.photos.length >= S.maxPhotos) {
-    await wait(500);
-    stopCamera();
-    show('preview');
-  }
-}
-
-// Single capture (tap for each photo)
-async function captureSingle() {
-  if (S.photos.length >= S.maxPhotos) return;
-
-  const shutterBtn = $('#shutter-btn');
-  if (shutterBtn) shutterBtn.disabled = true;
-
-  // Countdown
-  for (let c = S.countdown; c > 0; c--) {
-    showCountdown(c);
-    await wait(1000);
-  }
-  hideCountdown();
-
-  // Capture
-  flash();
-  const photo = await capturePhoto();
-  S.photos.push(photo);
-
-  if (navigator.vibrate) navigator.vibrate(50);
-
-  renderThumbnails();
-  updateCounter();
-
-  if (shutterBtn) shutterBtn.disabled = false;
-
-  // All done?
-  if (S.photos.length >= S.maxPhotos) {
-    await wait(600);
-    stopCamera();
-    show('preview');
-  }
-}
-
-function showCountdown(n) {
-  const overlay = $('#countdown-overlay');
-  const num = $('#countdown-number');
-  if (overlay && num) {
-    num.textContent = n;
-    num.style.animation = 'none';
-    void num.offsetWidth; // Reflow
-    num.style.animation = 'countPulse .5s ease-out';
-    overlay.classList.add('active');
-  }
-}
-
-function hideCountdown() {
-  const overlay = $('#countdown-overlay');
-  if (overlay) overlay.classList.remove('active');
-}
-
-function updateCounter() {
-  const counter = $('#photo-counter');
-  if (counter) counter.textContent = `${S.photos.length} / ${S.maxPhotos}`;
-}
-
-function renderThumbnails() {
-  const strip = $('#thumb-strip');
-  if (!strip) return;
-  strip.innerHTML = S.photos.map(p =>
-    `<img src="${p}" class="thumb-img" alt="photo">`
-  ).join('');
-}
-
-function wait(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
-// ===== STRIP COMPOSITING =====
-// Epson TM-m30II: 203 dpi, 80mm paper, 72mm printable = 576 dots width
-async function composeStrip() {
-  // Use 576px width to match exactly the TM-m30II printable area
-  const PRINT_WIDTH = 576;
-  const padding = 24;
-  const gap = 12;
-  const photoW = PRINT_WIDTH - (padding * 2); // 528px
-  const photoH = Math.round(photoW * 0.75); // 4:3 ratio = 396px
-  const footerH = 70;
-
-  const totalH = padding + (S.photos.length * (photoH + gap)) - gap + footerH + padding;
-  const totalW = PRINT_WIDTH;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = totalW;
-  canvas.height = totalH;
-  const ctx = canvas.getContext('2d');
-
-  // Background
-  const bgColors = {
-    white: '#ffffff',
-    vintage: '#f5f0e8',
-    dark: '#1a1a1a',
-    pink: '#fce4ec',
-  };
-  ctx.fillStyle = bgColors[S.stripStyle] || '#ffffff';
-  ctx.fillRect(0, 0, totalW, totalH);
-
-  // Draw photos with cover-fit cropping
-  for (let i = 0; i < S.photos.length; i++) {
-    const img = await loadImage(S.photos[i]);
-    const y = padding + i * (photoH + gap);
-    // Cover-fit: crop to fill the target rectangle
-    const srcRatio = img.width / img.height;
-    const dstRatio = photoW / photoH;
-    let sx = 0, sy = 0, sw = img.width, sh = img.height;
-    if (srcRatio > dstRatio) {
-      sw = img.height * dstRatio;
-      sx = (img.width - sw) / 2;
-    } else {
-      sh = img.width / dstRatio;
-      sy = (img.height - sh) / 2;
-    }
-    ctx.drawImage(img, sx, sy, sw, sh, padding, y, photoW, photoH);
-  }
-
-  // Footer text
-  const footerY = padding + S.photos.length * (photoH + gap) - gap + 16;
-  const textColor = S.stripStyle === 'dark' ? '#f0f0f0' : '#1a1a1a';
-  const dateColor = S.stripStyle === 'dark' ? '#666' : '#999';
-
-  ctx.textAlign = 'center';
-  ctx.fillStyle = textColor;
-  ctx.font = 'bold 24px Georgia, serif';
-  ctx.fillText(S.stripTitle || 'Photo Booth', totalW / 2, footerY + 26);
-
-  ctx.fillStyle = dateColor;
-  ctx.font = '12px sans-serif';
-  ctx.fillText(formatDate(new Date()), totalW / 2, footerY + 44);
-
-  S.currentStrip = canvas.toDataURL('image/jpeg', 0.92);
-  return S.currentStrip;
+  return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    img.crossOrigin = 'anonymous';
     img.onload = () => resolve(img);
     img.onerror = reject;
     img.src = src;
   });
 }
 
-// ===== SAVE & GALLERY =====
-function saveToGallery() {
-  if (!S.currentStrip) return;
-  const entry = {
-    id: Date.now().toString(),
-    dataUrl: S.currentStrip,
-    date: new Date().toISOString(),
-    title: S.stripTitle,
-    photoCount: S.photos.length,
-  };
-  S.gallery.unshift(entry);
-  try {
-    localStorage.setItem('photobooth_gallery', JSON.stringify(S.gallery));
-  } catch (e) {
-    // Storage full — remove oldest
-    if (S.gallery.length > 10) {
-      S.gallery = S.gallery.slice(0, 10);
-      localStorage.setItem('photobooth_gallery', JSON.stringify(S.gallery));
-    }
-  }
-  toast('Đã lưu vào gallery! ✓', 'success');
-}
-
+// =============================================
+// GALLERY PERSISTENCE
+// =============================================
 function loadGallery() {
   try {
-    const data = localStorage.getItem('photobooth_gallery');
-    if (data) S.gallery = JSON.parse(data);
+    const data = localStorage.getItem('pb_gallery');
+    S.gallery = data ? JSON.parse(data) : [];
+  } catch { S.gallery = []; }
+}
+
+function saveGallery() {
+  try {
+    // Keep only last 20 items to avoid localStorage overflow
+    const trimmed = S.gallery.slice(0, 20);
+    localStorage.setItem('pb_gallery', JSON.stringify(trimmed));
   } catch (e) {
-    S.gallery = [];
+    console.warn('Gallery save failed:', e);
   }
 }
 
-function deleteFromGallery(id) {
-  S.gallery = S.gallery.filter(g => g.id !== id);
-  localStorage.setItem('photobooth_gallery', JSON.stringify(S.gallery));
-  render();
-  toast('Đã xóa', 'info');
-}
-
-function downloadStrip() {
-  if (!S.currentStrip) return;
-  const a = document.createElement('a');
-  a.href = S.currentStrip;
-  a.download = `photobooth_${Date.now()}.jpg`;
-  a.click();
-  toast('Đang tải xuống...', 'info');
-}
-
-// ===== PRINT =====
-
-/**
- * Detect if running on mobile
- */
-function isMobile() {
-  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-}
-
-/**
- * Method 1: macOS/Desktop System Print Dialog
- * On macOS, Bluetooth printers DO appear in the print dialog (unlike iOS)
- */
-function printViaSystem() {
-  if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
-
-  const win = window.open('', '_blank');
-  if (!win) { toast('Popup bị chặn!', 'error'); return; }
-
-  win.document.write(`<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8">
-<title>In Photo Strip</title>
-<style>
-  @page { size: 80mm auto; margin: 0; }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #f5f5f5; display: flex; flex-direction: column; align-items: center; padding: 24px; font-family: -apple-system, sans-serif; }
-  img#strip { max-width: 300px; width: 100%; border-radius: 6px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
-  .actions { margin-top: 20px; display: flex; gap: 10px; }
-  button { padding: 12px 24px; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit; }
-  .btn-print { background: #007AFF; color: white; }
-  .btn-close { background: #e5e5ea; color: #1c1c1e; }
-  .hint { margin-top: 16px; font-size: 13px; color: #888; text-align: center; line-height: 1.6; max-width: 350px; }
-  .hint b { color: #333; }
-  @media print {
-    .no-print { display: none !important; }
-    body { background: white; padding: 0; }
-    img#strip { max-width: none; width: 80mm; border-radius: 0; box-shadow: none; }
+// =============================================
+// CAMERA
+// =============================================
+async function startCamera() {
+  try {
+    if (S.stream) { S.stream.getTracks().forEach(t => t.stop()); }
+    S.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 960 } },
+      audio: false,
+    });
+    const video = $('#viewfinder');
+    if (video) {
+      video.srcObject = S.stream;
+      video.setAttribute('playsinline', 'true');
+      video.play();
+    }
+  } catch (err) {
+    toast('Không thể mở camera: ' + err.message, 'error');
   }
-</style>
-</head><body>
-  <img id="strip" src="${S.currentStrip}" alt="Photo Strip">
-  <div class="actions no-print">
-    <button class="btn-print" onclick="window.print()">🖨️ In</button>
-    <button class="btn-close" onclick="window.close()">Đóng</button>
-  </div>
-  <p class="hint no-print">
-    Chọn <b>TM-m30II</b> trong danh sách máy in.<br>
-    Khổ giấy: <b>80mm</b> · Lề: <b>Không</b> · Tỷ lệ: <b>100%</b>
-  </p>
-</body></html>`);
-  win.document.close();
 }
 
-/**
- * Method 2: Web Bluetooth (Chrome on Desktop/Android)
- * Connects to TM-m30II via BLE GATT and sends ESC/POS raster image
- */
-async function printViaBluetooth() {
-  if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
+function stopCamera() {
+  if (S.stream) { S.stream.getTracks().forEach(t => t.stop()); S.stream = null; }
+  if (S.autoTimer) { clearTimeout(S.autoTimer); S.autoTimer = null; }
+}
 
-  if (!navigator.bluetooth) {
-    toast('Trình duyệt không hỗ trợ Bluetooth. Dùng Chrome!', 'error');
-    return;
+function flipCamera() {
+  S.facing = S.facing === 'user' ? 'environment' : 'user';
+  startCamera();
+}
+
+function getFilterCSS(filter) {
+  const filters = {
+    none: 'none', bw: 'grayscale(1)', sepia: 'sepia(0.8)',
+    vintage: 'sepia(0.3) contrast(1.1) brightness(1.05)',
+    cool: 'saturate(1.3) hue-rotate(10deg) brightness(1.05)',
+    warm: 'saturate(1.2) sepia(0.15) brightness(1.05)',
+  };
+  return filters[filter] || 'none';
+}
+
+function capturePhoto() {
+  const video = $('#viewfinder');
+  if (!video || S.photos.length >= S.maxPhotos) return;
+
+  // Flash effect
+  const wrap = $('.viewfinder-wrap');
+  if (wrap) {
+    const flash = document.createElement('div');
+    flash.className = 'flash-overlay';
+    wrap.appendChild(flash);
+    setTimeout(() => flash.remove(), 400);
   }
+
+  // Capture
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d');
+
+  // Mirror front camera
+  if (S.facing === 'user') {
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+  }
+
+  // Apply filter
+  ctx.filter = getFilterCSS(S.filter);
+  ctx.drawImage(video, 0, 0);
+
+  S.photos.push(canvas.toDataURL('image/jpeg', 0.92));
+  renderCameraUI();
+
+  if (S.photos.length >= S.maxPhotos) {
+    stopCamera();
+    show('preview');
+  }
+}
+
+async function startAutoCapture() {
+  if (S.photos.length >= S.maxPhotos) return;
+
+  for (let remaining = 3; remaining > 0; remaining--) {
+    showCountdown(remaining);
+    await wait(1000);
+  }
+  showCountdown(null);
+  capturePhoto();
+
+  if (S.photos.length < S.maxPhotos) {
+    S.autoTimer = setTimeout(() => startAutoCapture(), 800);
+  }
+}
+
+function showCountdown(n) {
+  const overlay = $('.viewfinder-overlay');
+  if (!overlay) return;
+  overlay.innerHTML = n ? `<div class="countdown-display">${n}</div>` : '';
+}
+
+function renderCameraUI() {
+  const thumbs = $('.photo-thumbs');
+  if (!thumbs) return;
+  thumbs.innerHTML = Array.from({ length: S.maxPhotos }, (_, i) => {
+    const photo = S.photos[i];
+    return `<div class="photo-thumb ${photo ? 'filled' : ''}">
+      ${photo ? `<img src="${photo}" alt="">` : ''}
+    </div>`;
+  }).join('');
+
+  const counter = $('.camera-counter');
+  if (counter) counter.textContent = `${S.photos.length} / ${S.maxPhotos}`;
+}
+
+// =============================================
+// PHOTO STRIP COMPOSITOR
+// =============================================
+async function composeStrip() {
+  if (S.photos.length === 0) return;
+  if (S.currentStrip && S.photos.length === S.maxPhotos) return; // Already composed
+
+  const WIDTH = 576; // 72mm printable area at 203 DPI
+  const PHOTO_GAP = 12;
+  const PADDING = 16;
+  const PHOTO_W = WIDTH - PADDING * 2;
+  const PHOTO_H = Math.round(PHOTO_W * 3 / 4); // 4:3 ratio
+  const FOOTER_H = 60;
+
+  const totalH = PADDING + (PHOTO_H + PHOTO_GAP) * S.photos.length - PHOTO_GAP + FOOTER_H + PADDING;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = WIDTH;
+  canvas.height = totalH;
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  const bgColors = { white: '#ffffff', vintage: '#f5f0e8', dark: '#1a1a1a', pink: '#fce4ec' };
+  ctx.fillStyle = bgColors[S.stripStyle] || '#ffffff';
+  ctx.fillRect(0, 0, WIDTH, totalH);
+
+  // Draw photos with cover-fit cropping
+  for (let i = 0; i < S.photos.length; i++) {
+    const img = await loadImage(S.photos[i]);
+    const y = PADDING + i * (PHOTO_H + PHOTO_GAP);
+
+    // Cover-fit crop
+    const srcAspect = img.width / img.height;
+    const destAspect = PHOTO_W / PHOTO_H;
+    let sx = 0, sy = 0, sw = img.width, sh = img.height;
+    if (srcAspect > destAspect) {
+      sw = img.height * destAspect;
+      sx = (img.width - sw) / 2;
+    } else {
+      sh = img.width / destAspect;
+      sy = (img.height - sh) / 2;
+    }
+
+    ctx.drawImage(img, sx, sy, sw, sh, PADDING, y, PHOTO_W, PHOTO_H);
+  }
+
+  // Footer text
+  const textColor = S.stripStyle === 'dark' ? '#e0e0e0' : '#333333';
+  ctx.fillStyle = textColor;
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 22px Inter, sans-serif';
+  const footerY = totalH - PADDING - 12;
+  ctx.fillText(S.stripTitle, WIDTH / 2, footerY);
+  ctx.font = '14px Inter, sans-serif';
+  ctx.fillStyle = S.stripStyle === 'dark' ? '#888' : '#999';
+  ctx.fillText(formatDate(new Date()), WIDTH / 2, footerY + 20);
+
+  S.currentStrip = canvas.toDataURL('image/jpeg', 0.95);
+}
+
+// =============================================
+// EPSON ePOS PRINT (WiFi/IP)
+// =============================================
+async function testPrinterConnection(ip) {
+  try {
+    const url = `http://${ip}:8008/cgi-bin/epos/service.cgi?devid=local_printer&timeout=5000`;
+    const testXml = `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
+    </epos-print>
+  </s:Body>
+</s:Envelope>`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '""' },
+      body: testXml,
+      signal: AbortSignal.timeout(5000),
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function printViaEpson(imageDataUrl) {
+  const ip = S.printerIP;
+  if (!ip) { show('setup'); return; }
+
+  toast('Đang chuẩn bị in...', 'info');
 
   try {
-    toast('Chọn máy in TM-m30II...', 'info');
+    const img = await loadImage(imageDataUrl || S.currentStrip);
+    const canvas = document.createElement('canvas');
+    canvas.width = 576;
+    canvas.height = Math.round((img.height / img.width) * 576);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    const device = await navigator.bluetooth.requestDevice({
-      filters: [
-        { namePrefix: 'TM-m30' },
-        { namePrefix: 'EPSON' },
-      ],
-      optionalServices: [
-        '000018f0-0000-1000-8000-00805f9b34fb', // Epson BLE Print
-        '49535343-fe7d-4ae5-8fa9-9fafd205e455', // Nordic UART
-        'e7810a71-73ae-499d-8c15-faa9aef0c3f2', // Serial
-      ],
-      acceptAllDevices: false,
-    }).catch(() =>
-      // Fallback: show all BLE devices if no Epson found
-      navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: [
-          '000018f0-0000-1000-8000-00805f9b34fb',
-          '49535343-fe7d-4ae5-8fa9-9fafd205e455',
-          'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
-        ],
-      })
-    );
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const rasterBase64 = toMonoRaster(imageData, canvas.width, canvas.height);
 
-    toast(`Kết nối ${device.name || 'máy in'}...`, 'info');
-    const server = await device.gatt.connect();
+    const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
+      <image width="${canvas.width}" height="${canvas.height}" color="color_1" mode="mono">${rasterBase64}</image>
+      <feed unit="30"/>
+      <cut type="feed"/>
+    </epos-print>
+  </s:Body>
+</s:Envelope>`;
 
-    // Find writable characteristic
-    let writeChar = null;
-    const services = await server.getPrimaryServices();
+    toast('Đang gửi đến máy in...', 'info');
+    const url = `http://${ip}:8008/cgi-bin/epos/service.cgi?devid=local_printer&timeout=30000`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '""' },
+      body: xmlBody,
+      signal: AbortSignal.timeout(15000),
+    });
 
-    for (const svc of services) {
-      try {
-        const chars = await svc.getCharacteristics();
-        for (const ch of chars) {
-          if (ch.properties.write || ch.properties.writeWithoutResponse) {
-            writeChar = ch;
-            break;
-          }
-        }
-        if (writeChar) break;
-      } catch (e) { /* skip services that fail */ }
-    }
-
-    if (!writeChar) {
-      toast('Không tìm thấy kênh BLE để gửi dữ liệu', 'error');
-      server.disconnect();
-      return;
-    }
-
-    toast('Đang chuyển đổi ảnh...', 'info');
-    const printData = await imageToEscPos(S.currentStrip, 576);
-
-    // Send in chunks (BLE MTU usually 20-512 bytes)
-    const chunkSize = 200;
-    const totalChunks = Math.ceil(printData.length / chunkSize);
-
-    for (let i = 0; i < printData.length; i += chunkSize) {
-      const chunk = printData.slice(i, i + chunkSize);
-      const progress = Math.round(((i / chunkSize + 1) / totalChunks) * 100);
-
-      try {
-        if (writeChar.properties.writeWithoutResponse) {
-          await writeChar.writeValueWithoutResponse(chunk);
-        } else {
-          await writeChar.writeValue(chunk);
-        }
-      } catch (writeErr) {
-        // Retry with smaller chunk
-        const smallChunk = 20;
-        for (let j = 0; j < chunk.length; j += smallChunk) {
-          const mini = chunk.slice(j, j + smallChunk);
-          if (writeChar.properties.writeWithoutResponse) {
-            await writeChar.writeValueWithoutResponse(mini);
-          } else {
-            await writeChar.writeValue(mini);
-          }
-          await wait(10);
-        }
+    if (response.ok) {
+      const text = await response.text();
+      if (text.includes('success="true"') || text.includes('code=""')) {
+        toast('✅ In thành công!', 'success');
+        S.printerConnected = true;
+      } else {
+        toast('Máy in phản hồi lỗi. Kiểm tra giấy.', 'error');
       }
-      await wait(20);
-
-      if (i % (chunkSize * 10) === 0) {
-        toast(`Đang in... ${progress}%`, 'info');
-      }
-    }
-
-    toast('✅ In thành công!', 'success');
-    server.disconnect();
-  } catch (err) {
-    if (err.name === 'NotFoundError' || err.message?.includes('cancelled')) {
-      // User cancelled picker — do nothing
     } else {
-      toast(`Lỗi BLE: ${err.message}`, 'error');
-      console.error('Bluetooth print error:', err);
+      throw new Error(`HTTP ${response.status}`);
+    }
+  } catch (err) {
+    S.printerConnected = false;
+    if (err.name === 'TimeoutError') {
+      toast('Hết thời gian chờ. Kiểm tra máy in.', 'error');
+    } else {
+      toast('Không kết nối được: ' + err.message, 'error');
     }
   }
 }
 
 /**
- * Convert image to ESC/POS raster commands (binary)
+ * Convert ImageData to monochrome raster (base64) with Floyd-Steinberg dithering
  */
-async function imageToEscPos(dataUrl, widthPx) {
-  const img = await loadImage(dataUrl);
-  const canvas = document.createElement('canvas');
-  canvas.width = widthPx;
-  canvas.height = Math.round((img.height / img.width) * widthPx);
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const pixels = imageData.data;
-  const w = canvas.width;
-  const h = canvas.height;
-
-  // Grayscale + Floyd-Steinberg dithering
+function toMonoRaster(imageData, w, h) {
+  const px = imageData.data;
   const gray = new Float32Array(w * h);
+
   for (let i = 0; i < w * h; i++) {
-    gray[i] = 0.299 * pixels[i*4] + 0.587 * pixels[i*4+1] + 0.114 * pixels[i*4+2];
+    gray[i] = 0.299 * px[i*4] + 0.587 * px[i*4+1] + 0.114 * px[i*4+2];
   }
+
+  // Floyd-Steinberg dithering
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const idx = y * w + x;
-      const old = gray[idx];
+      const i = y * w + x;
+      const old = gray[i];
       const val = old < 128 ? 0 : 255;
-      gray[idx] = val;
+      gray[i] = val;
       const err = old - val;
-      if (x + 1 < w) gray[idx + 1] += err * 7 / 16;
+      if (x + 1 < w) gray[i + 1] += err * 7 / 16;
       if (y + 1 < h) {
-        if (x - 1 >= 0) gray[(y+1)*w + x-1] += err * 3 / 16;
+        if (x > 0) gray[(y+1)*w + x-1] += err * 3 / 16;
         gray[(y+1)*w + x] += err * 5 / 16;
-        if (x + 1 < w) gray[(y+1)*w + x+1] += err * 1 / 16;
+        if (x + 1 < w) gray[(y+1)*w + x+1] += err / 16;
       }
     }
   }
 
-  const bytesPerLine = Math.ceil(w / 8);
-  const buffer = [];
-
-  // ESC @ — initialize printer
-  buffer.push(0x1B, 0x40);
-  // GS v 0 — raster bit image (entire image at once)
-  buffer.push(0x1D, 0x76, 0x30, 0x00);
-  buffer.push(bytesPerLine & 0xFF, (bytesPerLine >> 8) & 0xFF);
-  buffer.push(h & 0xFF, (h >> 8) & 0xFF);
-
+  const bpr = Math.ceil(w / 8);
+  const bytes = new Uint8Array(bpr * h);
   for (let y = 0; y < h; y++) {
-    for (let xByte = 0; xByte < bytesPerLine; xByte++) {
-      let byte = 0;
-      for (let bit = 0; bit < 8; bit++) {
-        const x = xByte * 8 + bit;
-        if (x < w && gray[y * w + x] < 128) {
-          byte |= (0x80 >> bit);
-        }
+    for (let x = 0; x < w; x++) {
+      if (gray[y * w + x] < 128) {
+        bytes[y * bpr + (x >> 3)] |= (0x80 >> (x & 7));
       }
-      buffer.push(byte);
     }
   }
 
-  // Feed + cut
-  buffer.push(0x1B, 0x64, 0x05); // Feed 5 lines
-  buffer.push(0x1D, 0x56, 0x41, 0x03); // Partial cut
-
-  return new Uint8Array(buffer);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
 }
 
-/**
- * Share/Save for mobile (iOS/Android)
- */
-async function saveAndPrint() {
-  if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
+// =============================================
+// PRINTER SIMULATOR
+// =============================================
+async function openSimulator() {
+  if (!S.currentStrip) { toast('Chưa có ảnh', 'error'); return; }
+  toast('Đang render giả lập...', 'info');
 
-  try {
-    const blob = await (await fetch(S.currentStrip)).blob();
-    const file = new File([blob], 'photobooth.jpg', { type: 'image/jpeg' });
-
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: S.stripTitle || 'Photo Booth' });
-      toast('✓ Đã chia sẻ!', 'success');
-      return;
-    }
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `photobooth_${Date.now()}.jpg`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast('✓ Đã tải xuống!', 'success');
-  } catch (e) {
-    if (e.name !== 'AbortError') toast('Lỗi: ' + e.message, 'error');
-  }
-}
-
-/**
- * Show print options — different for mobile vs desktop
- */
-async function showPrintOptions() {
-  await composeStrip();
-
-  const actions = $('.preview-actions');
-  if (!actions) return;
-
-  const hasPrinterIP = !!S.printerIP;
-  const mobile = isMobile();
-  const hasBluetooth = !!navigator.bluetooth;
-
-  // Simulator card (always shown)
-  const simulatorCard = `
-    <div class="print-option-card" onclick="printSimulator()">
-      <div class="print-option-icon" style="background:linear-gradient(135deg,#a855f7,#6366f1)">🧪</div>
-      <div class="print-option-info">
-        <h3>Giả lập máy in</h3>
-        <p>Xem trước kết quả in trên giấy nhiệt 80mm (không cần máy in)</p>
-      </div>
-    </div>
-  `;
-
-  if (mobile) {
-    actions.innerHTML = `
-      <div class="full-width" style="display:flex;flex-direction:column;gap:10px">
-        <div class="print-option-card" onclick="saveAndPrint()">
-          <div class="print-option-icon save">📤</div>
-          <div class="print-option-info">
-            <h3>Lưu & Chia sẻ ảnh</h3>
-            <p>Lưu ảnh → mở trong <b>Epson TM Utility</b> để in</p>
-          </div>
-        </div>
-        <div class="print-option-card" onclick="printViaEpson()">
-          <div class="print-option-icon bluetooth">🌐</div>
-          <div class="print-option-info">
-            <h3>In qua WiFi (ePOS)</h3>
-            <p>${hasPrinterIP ? `IP: <b>${S.printerIP}</b> — nhấn để in!` : 'Nhập IP máy in khi có WiFi'}</p>
-          </div>
-        </div>
-        ${simulatorCard}
-        <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
-      </div>
-    `;
-  } else {
-    actions.innerHTML = `
-      <div class="full-width" style="display:flex;flex-direction:column;gap:10px">
-        <div class="print-option-card" onclick="printViaSystem()">
-          <div class="print-option-icon save">🖨️</div>
-          <div class="print-option-info">
-            <h3>In qua hệ thống (macOS)</h3>
-            <p>Chọn <b>TM-m30II</b> đã pair Bluetooth trong danh sách máy in</p>
-          </div>
-        </div>
-        ${hasBluetooth ? `
-        <div class="print-option-card" onclick="printViaBluetooth()">
-          <div class="print-option-icon bluetooth">🔵</div>
-          <div class="print-option-info">
-            <h3>In trực tiếp qua Bluetooth</h3>
-            <p>Kết nối BLE trực tiếp — gửi ảnh qua ESC/POS (Chrome)</p>
-          </div>
-        </div>
-        ` : ''}
-        <div class="print-option-card" onclick="printViaEpson()">
-          <div class="print-option-icon bluetooth">🌐</div>
-          <div class="print-option-info">
-            <h3>In qua WiFi (ePOS)</h3>
-            <p>${hasPrinterIP ? `IP: <b>${S.printerIP}</b> — nhấn để in!` : 'Nhập IP nếu máy in có WiFi'}</p>
-          </div>
-        </div>
-        ${simulatorCard}
-        <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
-      </div>
-    `;
-  }
-}
-
-/**
- * Thermal Printer Simulator
- * Shows exactly how the image would look printed on 80mm thermal paper
- * Renders monochrome with Floyd-Steinberg dithering at 576 dots width
- */
-async function printSimulator() {
-  if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
-
-  toast('Đang giả lập...', 'info');
-
-  // Convert image to monochrome (same as real printer)
   const img = await loadImage(S.currentStrip);
   const canvas = document.createElement('canvas');
   canvas.width = 576;
@@ -714,616 +398,415 @@ async function printSimulator() {
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const pixels = imageData.data;
-  const w = canvas.width;
-  const h = canvas.height;
-
-  // Grayscale + Floyd-Steinberg dithering
+  const px = imageData.data;
+  const w = canvas.width, h = canvas.height;
   const gray = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    gray[i] = 0.299 * pixels[i*4] + 0.587 * pixels[i*4+1] + 0.114 * pixels[i*4+2];
-  }
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const idx = y * w + x;
-      const old = gray[idx];
-      const val = old < 128 ? 0 : 255;
-      gray[idx] = val;
-      const err = old - val;
-      if (x + 1 < w) gray[idx + 1] += err * 7 / 16;
-      if (y + 1 < h) {
-        if (x - 1 >= 0) gray[(y+1)*w + x-1] += err * 3 / 16;
-        gray[(y+1)*w + x] += err * 5 / 16;
-        if (x + 1 < w) gray[(y+1)*w + x+1] += err * 1 / 16;
-      }
-    }
-  }
 
-  // Apply dithered result back to canvas
-  for (let i = 0; i < w * h; i++) {
-    const v = gray[i] < 128 ? 0 : 255;
-    pixels[i * 4] = v;
-    pixels[i * 4 + 1] = v;
-    pixels[i * 4 + 2] = v;
-    pixels[i * 4 + 3] = 255;
+  for (let i = 0; i < w * h; i++) gray[i] = 0.299*px[i*4]+0.587*px[i*4+1]+0.114*px[i*4+2];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = y*w+x; const o = gray[i]; const v = o<128?0:255; gray[i]=v; const e=o-v;
+    if(x+1<w) gray[i+1]+=e*7/16;
+    if(y+1<h){if(x>0)gray[(y+1)*w+x-1]+=e*3/16;gray[(y+1)*w+x]+=e*5/16;if(x+1<w)gray[(y+1)*w+x+1]+=e/16;}
   }
+  for (let i=0;i<w*h;i++){const v=gray[i]<128?0:255;px[i*4]=v;px[i*4+1]=v;px[i*4+2]=v;px[i*4+3]=255;}
   ctx.putImageData(imageData, 0, 0);
-
-  const thermalDataUrl = canvas.toDataURL('image/png');
-
-  // Open simulator in new window
-  const simHTML = `<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🧪 Giả lập máy in Epson TM-m30II</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, 'Helvetica Neue', sans-serif;
-    background: #1a1a2e;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 24px 16px;
-    color: #e0e0e0;
-  }
-
-  h1 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
-  .subtitle { font-size: 13px; color: #888; margin-bottom: 20px; }
-
-  .printer-body {
-    background: #2d2d3f;
-    border-radius: 20px 20px 8px 8px;
-    padding: 20px 16px 8px;
-    width: 100%;
-    max-width: 380px;
-    box-shadow: 0 8px 40px rgba(0,0,0,0.4);
-    position: relative;
-  }
-
-  .printer-top {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 12px;
-  }
-  .printer-brand { font-size: 12px; font-weight: 700; color: #6366f1; letter-spacing: 2px; text-transform: uppercase; }
-  .printer-model { font-size: 11px; color: #555; }
-  .printer-led {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: #22c55e;
-    box-shadow: 0 0 8px #22c55e;
-    animation: blink 2s infinite;
-  }
-  @keyframes blink { 50% { opacity: 0.4; } }
-
-  .paper-slot {
-    background: #111;
-    border-radius: 4px;
-    padding: 4px;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .receipt {
-    background: #f5f0e8;
-    padding: 8px;
-    animation: printSlide 1.5s ease-out forwards;
-    transform: translateY(-100%);
-    border-bottom-left-radius: 2px;
-    border-bottom-right-radius: 2px;
-    /* Torn edge effect */
-    position: relative;
-  }
-  .receipt::after {
-    content: '';
-    position: absolute;
-    bottom: -6px; left: 0; right: 0; height: 6px;
-    background: linear-gradient(135deg, #f5f0e8 33.33%, transparent 33.33%) -6px 0,
-                linear-gradient(225deg, #f5f0e8 33.33%, transparent 33.33%) -6px 0;
-    background-size: 12px 6px;
-  }
-  @keyframes printSlide {
-    from { transform: translateY(-100%); opacity: 0; }
-    20% { opacity: 1; }
-    to { transform: translateY(0); opacity: 1; }
-  }
-
-  .receipt img {
-    width: 100%;
-    display: block;
-    image-rendering: pixelated;
-  }
-
-  .info-bar {
-    display: flex; justify-content: space-between; align-items: center;
-    margin-top: 16px; width: 100%; max-width: 380px;
-    font-size: 12px; color: #666;
-  }
-
-  .specs {
-    margin-top: 20px;
-    width: 100%; max-width: 380px;
-    background: #2d2d3f;
-    border-radius: 12px;
-    padding: 16px;
-  }
-  .specs h3 { font-size: 14px; margin-bottom: 8px; color: #a855f7; }
-  .spec-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; border-bottom: 1px solid #3a3a4a; }
-  .spec-row:last-child { border: none; }
-  .spec-label { color: #888; }
-  .spec-value { color: #e0e0e0; font-weight: 600; }
-
-  .actions { margin-top: 20px; display: flex; gap: 10px; }
-  button {
-    padding: 12px 24px; border: none; border-radius: 12px;
-    font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
-    transition: transform 0.1s;
-  }
-  button:active { transform: scale(0.96); }
-  .btn-save { background: #6366f1; color: white; }
-  .btn-close { background: #3a3a4a; color: #ccc; }
-</style>
-</head><body>
-  <h1>🧪 Giả lập Epson TM-m30II</h1>
-  <p class="subtitle">Đây là hình ảnh sẽ được in trên giấy nhiệt 80mm</p>
-
-  <div class="printer-body">
-    <div class="printer-top">
-      <div>
-        <div class="printer-brand">EPSON</div>
-        <div class="printer-model">TM-m30II · 80mm</div>
-      </div>
-      <div class="printer-led"></div>
-    </div>
-    <div class="paper-slot">
-      <div class="receipt">
-        <img src="${thermalDataUrl}" alt="Thermal Print Preview">
-      </div>
-    </div>
-  </div>
-
-  <div class="info-bar">
-    <span>576 × ${h} dots</span>
-    <span>203 DPI</span>
-    <span>Monochrome</span>
-  </div>
-
-  <div class="specs">
-    <h3>📋 Thông số in</h3>
-    <div class="spec-row">
-      <span class="spec-label">Khổ giấy</span>
-      <span class="spec-value">80mm (72mm printable)</span>
-    </div>
-    <div class="spec-row">
-      <span class="spec-label">Độ phân giải</span>
-      <span class="spec-value">576 × ${h} dots</span>
-    </div>
-    <div class="spec-row">
-      <span class="spec-label">DPI</span>
-      <span class="spec-value">203 DPI</span>
-    </div>
-    <div class="spec-row">
-      <span class="spec-label">Chế độ màu</span>
-      <span class="spec-value">Monochrome (1-bit)</span>
-    </div>
-    <div class="spec-row">
-      <span class="spec-label">Dithering</span>
-      <span class="spec-value">Floyd-Steinberg</span>
-    </div>
-    <div class="spec-row">
-      <span class="spec-label">Kích thước dữ liệu</span>
-      <span class="spec-value">${Math.round(576 * h / 8 / 1024)} KB</span>
-    </div>
-  </div>
-
-  <div class="actions">
-    <button class="btn-save" onclick="saveReceipt()">💾 Lưu ảnh giả lập</button>
-    <button class="btn-close" onclick="window.close()">Đóng</button>
-  </div>
-
-  <script>
-  function saveReceipt() {
-    const a = document.createElement('a');
-    a.href = '${thermalDataUrl}';
-    a.download = 'thermal_preview_${Date.now()}.png';
-    a.click();
-  }
-  </script>
-</body></html>`;
+  const thermalUrl = canvas.toDataURL('image/png');
 
   const win = window.open('', '_blank');
   if (!win) { toast('Popup bị chặn!', 'error'); return; }
-  win.document.write(simHTML);
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🧪 Giả lập Epson TM-m30II</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#1a1a2e;color:#e0e0e0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+h1{font-size:18px;font-weight:700;margin-bottom:4px}.sub{font-size:13px;color:#888;margin-bottom:20px}
+.printer{background:#2d2d3f;border-radius:20px 20px 8px 8px;padding:20px 16px 8px;width:100%;max-width:380px;box-shadow:0 8px 40px rgba(0,0,0,.4)}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.brand{font-size:12px;font-weight:700;color:#6366f1;letter-spacing:2px;text-transform:uppercase}.model{font-size:11px;color:#555}
+.led{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;animation:blink 2s infinite}@keyframes blink{50%{opacity:.4}}
+.slot{background:#111;border-radius:4px;padding:4px;overflow:hidden}
+.receipt{background:#f5f0e8;padding:8px;animation:slide 1.5s ease-out forwards;transform:translateY(-100%);position:relative}
+.receipt::after{content:'';position:absolute;bottom:-6px;left:0;right:0;height:6px;background:linear-gradient(135deg,#f5f0e8 33.33%,transparent 33.33%) -6px 0,linear-gradient(225deg,#f5f0e8 33.33%,transparent 33.33%) -6px 0;background-size:12px 6px}
+@keyframes slide{from{transform:translateY(-100%);opacity:0}20%{opacity:1}to{transform:translateY(0);opacity:1}}
+.receipt img{width:100%;display:block;image-rendering:pixelated}
+.info{display:flex;justify-content:space-between;margin-top:16px;width:100%;max-width:380px;font-size:12px;color:#666}
+.specs{margin-top:20px;width:100%;max-width:380px;background:#2d2d3f;border-radius:12px;padding:16px}
+.specs h3{font-size:14px;margin-bottom:8px;color:#a855f7}.row{display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #3a3a4a}.row:last-child{border:none}.lbl{color:#888}.val{font-weight:600}
+.acts{margin-top:20px;display:flex;gap:10px}
+button{padding:12px 24px;border:none;border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;transition:transform .1s}button:active{transform:scale(.96)}
+.save{background:#6366f1;color:#fff}.close{background:#3a3a4a;color:#ccc}
+</style></head><body>
+<h1>🧪 Giả lập Epson TM-m30II</h1><p class="sub">Kết quả in trên giấy nhiệt 80mm</p>
+<div class="printer"><div class="top"><div><div class="brand">EPSON</div><div class="model">TM-m30II · 80mm</div></div><div class="led"></div></div>
+<div class="slot"><div class="receipt"><img src="${thermalUrl}" alt="Preview"></div></div></div>
+<div class="info"><span>576 × ${h} dots</span><span>203 DPI</span><span>Mono</span></div>
+<div class="specs"><h3>📋 Thông số</h3>
+<div class="row"><span class="lbl">Khổ giấy</span><span class="val">80mm</span></div>
+<div class="row"><span class="lbl">Độ phân giải</span><span class="val">576×${h}</span></div>
+<div class="row"><span class="lbl">DPI</span><span class="val">203</span></div>
+<div class="row"><span class="lbl">Màu</span><span class="val">Mono 1-bit</span></div>
+<div class="row"><span class="lbl">Dithering</span><span class="val">Floyd-Steinberg</span></div>
+<div class="row"><span class="lbl">Dữ liệu</span><span class="val">${Math.round(576*h/8/1024)} KB</span></div></div>
+<div class="acts"><button class="save" onclick="const a=document.createElement('a');a.href='${thermalUrl}';a.download='thermal.png';a.click()">💾 Lưu</button>
+<button class="close" onclick="window.close()">Đóng</button></div>
+</body></html>`);
   win.document.close();
-  toast('✓ Giả lập đã mở!', 'success');
 }
 
-/**
- * Method 2: Epson ePOS-Print XML API — direct network print via printer IP
- * The TM-m30II has a built-in web server that accepts print commands
- * This works from any browser on the same network
- */
-async function printViaEpson() {
-  if (!S.currentStrip) { toast('Chưa có ảnh để in', 'error'); return; }
+// =============================================
+// FILE UPLOAD
+// =============================================
+function triggerUpload() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.multiple = true;
+  input.onchange = () => handleUpload(input.files);
+  input.click();
+}
 
-  const ip = S.printerIP;
-  if (!ip) {
-    showPrinterIPSetup();
-    return;
+async function handleUpload(files) {
+  if (!files || files.length === 0) return;
+  toast(`Đang tải ${files.length} ảnh...`, 'info');
+
+  let count = 0;
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) continue;
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      S.gallery.unshift({
+        id: 'up_' + Date.now() + '_' + count,
+        dataUrl,
+        date: new Date().toISOString(),
+        title: file.name.replace(/\.[^/.]+$/, ''),
+      });
+      count++;
+    } catch (e) { console.error(e); }
   }
+  if (count > 0) {
+    saveGallery();
+    toast(`✅ Đã tải ${count} ảnh`, 'success');
+    show('gallery');
+  }
+}
 
-  toast('Đang chuẩn bị ảnh in...', 'info');
+// =============================================
+// ACTIONS
+// =============================================
+function saveStripToGallery() {
+  if (!S.currentStrip) return;
+  S.gallery.unshift({
+    id: 'strip_' + Date.now(),
+    dataUrl: S.currentStrip,
+    date: new Date().toISOString(),
+    title: S.stripTitle,
+  });
+  saveGallery();
+  toast('✅ Đã lưu vào Gallery', 'success');
+}
 
+async function downloadStrip() {
+  if (!S.currentStrip) return;
+  const a = document.createElement('a');
+  a.href = S.currentStrip;
+  a.download = `photobooth_${Date.now()}.jpg`;
+  a.click();
+  toast('✅ Đã tải xuống', 'success');
+}
+
+async function shareStrip() {
+  if (!S.currentStrip) return;
   try {
-    // Convert image to canvas for the ePOS API
-    const img = await loadImage(S.currentStrip);
-    const canvas = document.createElement('canvas');
-    // TM-m30II: 576 dots width at 203dpi
-    canvas.width = 576;
-    canvas.height = Math.round((img.height / img.width) * 576);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-    // Convert to monochrome raster data for ePOS XML
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const rasterData = canvasToRasterBase64(imageData, canvas.width, canvas.height);
-
-    // Build ePOS-Print XML command
-    const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Body>
-    <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
-      <image width="${canvas.width}" height="${canvas.height}" color="color_1" mode="mono">${rasterData}</image>
-      <feed unit="30"/>
-      <cut type="feed"/>
-    </epos-print>
-  </s:Body>
-</s:Envelope>`;
-
-    toast('Đang gửi đến máy in...', 'info');
-
-    // Send to printer's ePOS endpoint
-    const url = `http://${ip}:8008/cgi-bin/epos/service.cgi?devid=local_printer&timeout=30000`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/xml; charset=utf-8',
-        'SOAPAction': '""',
-      },
-      body: xmlBody,
-      signal: AbortSignal.timeout(15000),
-    });
-
-    if (response.ok) {
-      const text = await response.text();
-      if (text.includes('success="true"') || text.includes('code=""')) {
-        toast('✓ In thành công!', 'success');
-      } else {
-        toast('Máy in phản hồi lỗi. Kiểm tra giấy & kết nối.', 'error');
-        console.log('ePOS response:', text);
-      }
+    const blob = await (await fetch(S.currentStrip)).blob();
+    const file = new File([blob], 'photobooth.jpg', { type: 'image/jpeg' });
+    if (navigator.share && navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title: S.stripTitle });
+      toast('✅ Đã chia sẻ', 'success');
     } else {
-      throw new Error(`HTTP ${response.status}`);
+      downloadStrip();
     }
-  } catch (err) {
-    if (err.name === 'TypeError' && err.message.includes('fetch')) {
-      toast('Không kết nối được. Kiểm tra IP máy in & cùng WiFi.', 'error');
-    } else if (err.name === 'TimeoutError') {
-      toast('Hết thời gian chờ. Kiểm tra máy in có bật không.', 'error');
-    } else {
-      toast(`Lỗi: ${err.message}`, 'error');
-    }
-    console.error('ePOS print error:', err);
+  } catch (e) {
+    if (e.name !== 'AbortError') downloadStrip();
   }
 }
 
-/**
- * Convert canvas ImageData to base64 raster data for ePOS-Print XML
- * Each pixel becomes 1 bit (monochrome) using Floyd-Steinberg dithering
- */
-function canvasToRasterBase64(imageData, w, h) {
-  const pixels = imageData.data;
-  const gray = new Float32Array(w * h);
-
-  // Convert to grayscale
-  for (let i = 0; i < w * h; i++) {
-    const r = pixels[i * 4];
-    const g = pixels[i * 4 + 1];
-    const b = pixels[i * 4 + 2];
-    gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
-  }
-
-  // Floyd-Steinberg dithering for better photo quality
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const idx = y * w + x;
-      const old = gray[idx];
-      const val = old < 128 ? 0 : 255;
-      gray[idx] = val;
-      const err = old - val;
-      if (x + 1 < w) gray[idx + 1] += err * 7 / 16;
-      if (y + 1 < h) {
-        if (x - 1 >= 0) gray[(y + 1) * w + x - 1] += err * 3 / 16;
-        gray[(y + 1) * w + x] += err * 5 / 16;
-        if (x + 1 < w) gray[(y + 1) * w + x + 1] += err * 1 / 16;
-      }
-    }
-  }
-
-  // Pack into bytes (1 bit per pixel, MSB first)
-  const bytesPerRow = Math.ceil(w / 8);
-  const rasterBytes = new Uint8Array(bytesPerRow * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (gray[y * w + x] < 128) { // Black pixel = 1
-        const byteIdx = y * bytesPerRow + Math.floor(x / 8);
-        rasterBytes[byteIdx] |= (0x80 >> (x % 8));
-      }
-    }
-  }
-
-  // Convert to base64
-  let binary = '';
-  for (let i = 0; i < rasterBytes.length; i++) {
-    binary += String.fromCharCode(rasterBytes[i]);
-  }
-  return btoa(binary);
-}
-
-/**
- * Show printer IP setup dialog
- */
-function showPrinterIPSetup() {
-  const actions = $('.preview-actions');
-  if (!actions) return;
-
-  actions.innerHTML = `
-    <div class="full-width" style="display:flex;flex-direction:column;gap:12px">
-      <div style="text-align:center;padding:8px 0">
-        <div style="font-size:28px;margin-bottom:8px">🌐</div>
-        <div style="font-size:15px;font-weight:600">Nhập IP máy in Epson</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:4px">TM-m30II phải cùng mạng WiFi</div>
-      </div>
-      <input type="text" class="strip-title-input" id="printer-ip-input"
-             value="${S.printerIP}" placeholder="192.168.1.xxx"
-             inputmode="decimal"
-             style="text-align:center;font-size:18px;font-family:monospace;letter-spacing:1px">
-      <button class="btn btn-accent btn-block" onclick="savePrinterIPAndPrint()">
-        <span class="icon">🖨️</span> Lưu & In
-      </button>
-      <button class="btn btn-ghost btn-block btn-sm" onclick="render()">← Quay lại</button>
-      <div style="font-size:11px;color:var(--text-muted);text-align:center;line-height:1.5">
-        💡 Tìm IP trong cài đặt máy in hoặc in trang cấu hình<br>
-        (giữ nút Feed khi bật máy)
-      </div>
-    </div>
-  `;
-
-  setTimeout(() => {
-    const input = document.getElementById('printer-ip-input');
-    if (input) input.focus();
-  }, 100);
-}
-
-function savePrinterIPAndPrint() {
-  const input = document.getElementById('printer-ip-input');
+async function savePrinterIP() {
+  const input = $('#ip-input');
   const ip = input?.value?.trim();
-  if (!ip) {
-    toast('Vui lòng nhập địa chỉ IP', 'error');
+  if (!ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+    toast('IP không hợp lệ', 'error');
     return;
   }
-  // Basic IP validation
-  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-    toast('IP không hợp lệ. Ví dụ: 192.168.1.100', 'error');
-    return;
-  }
+
+  toast('Đang kiểm tra kết nối...', 'info');
   S.printerIP = ip;
   localStorage.setItem('epson_printer_ip', ip);
-  toast(`Đã lưu IP: ${ip}`, 'success');
-  render();
-  // Trigger print
-  setTimeout(() => printViaEpson(), 500);
-}
 
-// ===== RENDERING =====
-function render() {
-  const app = document.getElementById('app');
-  app.innerHTML = `
-    <div id="toast-container" class="toast-container"></div>
-    ${renderHomeScreen()}
-    ${renderCameraScreen()}
-    ${renderPreviewScreen()}
-    ${renderGalleryScreen()}
-  `;
-
-  // After rendering camera screen, start camera if needed
-  if (S.screen === 'camera') {
-    requestAnimationFrame(() => startCamera());
+  const ok = await testPrinterConnection(ip);
+  S.printerConnected = ok;
+  if (ok) {
+    toast('✅ Kết nối thành công!', 'success');
+    show('home');
+  } else {
+    toast('⚠️ Đã lưu IP. Máy in chưa phản hồi — kiểm tra WiFi.', 'error');
+    show('home');
   }
 }
 
-function screenClass(name) {
-  if (S.screen === name) return 'screen';
-  return 'screen hidden';
+// =============================================
+// UI RENDERING
+// =============================================
+function show(screen) {
+  S.screen = screen;
+  if (screen !== 'camera') stopCamera();
+  render();
+  if (screen === 'camera') startCamera();
 }
 
-// ===== HOME =====
-function renderHomeScreen() {
+function render() {
+  const app = document.getElementById('app');
+  const screens = {
+    home: renderHome,
+    camera: renderCamera,
+    preview: renderPreview,
+    gallery: renderGallery,
+    setup: renderSetup,
+    print: renderPrintOptions,
+  };
+  app.innerHTML = (screens[S.screen] || renderHome)();
+
+  // Post-render hooks
+  if (S.screen === 'camera') {
+    setTimeout(() => renderCameraUI(), 50);
+  }
+  if (S.screen === 'preview') {
+    composeStrip().then(() => {
+      const img = $('#strip-img');
+      if (img && S.currentStrip) img.src = S.currentStrip;
+    });
+  }
+}
+
+// ----- HOME -----
+function renderHome() {
+  const connected = S.printerConnected;
+  const hasIP = !!S.printerIP;
   return `
-  <div class="${screenClass('home')} home-screen" id="screen-home">
+  <div class="screen active home-screen" id="screen-home">
+    <div class="printer-status ${connected ? 'connected' : 'disconnected'}" onclick="W.show('setup')">
+      <div class="dot"></div>
+      ${connected ? `Máy in: ${S.printerIP}` : (hasIP ? `⚠ ${S.printerIP} — chưa kết nối` : '🔌 Chưa cài đặt máy in')}
+    </div>
     <div class="home-logo">📸</div>
-    <h1 class="home-title">Photo Booth</h1>
-    <p class="home-subtitle">Chụp · In · Chia sẻ</p>
+    <div class="home-title">Photo Booth</div>
+    <div class="home-subtitle">Chụp · In · Chia sẻ</div>
     <div class="home-actions">
-      <button class="btn btn-accent btn-block" onclick="startSession()">
+      <button class="btn btn-accent btn-block" onclick="W.startSession()">
         <span class="icon">📷</span> Bắt đầu chụp
       </button>
-      <button class="btn btn-ghost btn-block" onclick="openGallery()">
+      <button class="btn btn-ghost btn-block" onclick="W.show('gallery')">
         <span class="icon">🖼️</span> Gallery ${S.gallery.length > 0 ? `(${S.gallery.length})` : ''}
+      </button>
+      <button class="btn btn-ghost btn-block" onclick="W.triggerUpload()">
+        <span class="icon">📁</span> Tải ảnh lên & In
+      </button>
+      <button class="btn btn-ghost btn-block btn-sm" onclick="W.show('setup')">
+        <span class="icon">⚙️</span> Cài đặt máy in
       </button>
     </div>
   </div>`;
 }
 
-// ===== CAMERA =====
-function renderCameraScreen() {
-  const filterLabel = {
-    none: 'Gốc', bw: 'B&W', sepia: 'Sepia',
-    vintage: 'Vintage', cool: 'Cool', warm: 'Warm',
-  };
-
+// ----- CAMERA -----
+function renderCamera() {
   return `
-  <div class="${screenClass('camera')} camera-screen" id="screen-camera">
+  <div class="screen active camera-screen" id="screen-camera">
     <div class="camera-header">
-      <button class="back-btn" onclick="cancelSession()">✕</button>
-      <div class="camera-counter" id="camera-counter">
-        <span>📸</span>
-        <span id="photo-counter">${S.photos.length} / ${S.maxPhotos}</span>
-      </div>
-      <div class="camera-filter-label">${filterLabel[S.filter]}</div>
+      <button class="btn btn-sm btn-ghost" onclick="W.cancelSession()" style="color:white;border-color:rgba(255,255,255,.3)">Hủy</button>
+      <div class="camera-counter">${S.photos.length} / ${S.maxPhotos}</div>
+      <button class="cam-side-btn" onclick="W.flipCamera()">🔄</button>
     </div>
 
-    <div class="thumb-strip" id="thumb-strip">
-      ${S.photos.map(p => `<img src="${p}" class="thumb-img" alt="">`).join('')}
-    </div>
-
-    <div class="camera-viewfinder">
-      <video id="camera-video" autoplay playsinline muted
-             style="filter:${getFilterCSS(S.filter)};${S.cameraFacing === 'user' ? 'transform:scaleX(-1);' : ''}"></video>
-      <div class="countdown-overlay" id="countdown-overlay">
-        <div class="countdown-number" id="countdown-number">3</div>
-      </div>
-      <div class="flash-overlay" id="flash-overlay"></div>
-    </div>
-
-    <div class="filter-strip">
-      ${['none','bw','sepia','vintage','cool','warm'].map(f => `
-        <button class="filter-chip ${S.filter === f ? 'active' : ''}"
-                onclick="setFilter('${f}')">${filterLabel[f]}</button>
-      `).join('')}
+    <div class="viewfinder-wrap">
+      <video id="viewfinder" class="viewfinder" autoplay playsinline muted
+             style="filter:${getFilterCSS(S.filter)}"></video>
+      <div class="viewfinder-overlay"></div>
     </div>
 
     <div class="camera-controls">
-      <button class="camera-side-btn" onclick="flipCamera()">🔄</button>
-      <button class="shutter-btn" id="shutter-btn" onclick="captureSingle()"></button>
-      <button class="camera-side-btn" onclick="startAutoSequence()">⏱️</button>
+      <div class="filter-bar">
+        ${['none','bw','sepia','vintage','cool','warm'].map(f =>
+          `<div class="filter-chip ${S.filter===f?'active':''}" onclick="W.setFilter('${f}')">${
+            {none:'Gốc',bw:'B&W',sepia:'Sepia',vintage:'Vintage',cool:'Cool',warm:'Warm'}[f]
+          }</div>`
+        ).join('')}
+      </div>
+
+      <div class="capture-row">
+        <button class="cam-side-btn" onclick="W.startAutoCapture()">⏱</button>
+        <button class="capture-btn" onclick="W.capturePhoto()" id="capture-btn"></button>
+        <div style="width:44px"></div>
+      </div>
+
+      <div class="photo-thumbs">
+        ${Array.from({length: S.maxPhotos}, () => '<div class="photo-thumb"></div>').join('')}
+      </div>
     </div>
   </div>`;
 }
 
-// ===== PREVIEW =====
-function renderPreviewScreen() {
-  const stripBg = { white: '#fff', vintage: '#f5f0e8', dark: '#1a1a1a', pink: '#fce4ec' };
-  const textColor = S.stripStyle === 'dark' ? '#f0f0f0' : '#1a1a1a';
-
+// ----- PREVIEW -----
+function renderPreview() {
   return `
-  <div class="${screenClass('preview')} preview-screen" id="screen-preview">
+  <div class="screen active preview-screen" id="screen-preview">
     <div class="preview-header">
-      <button class="btn btn-sm btn-ghost" onclick="retakePhotos()">
+      <button class="btn btn-sm btn-ghost" onclick="W.retake()">
         <span class="icon">↩</span> Chụp lại
       </button>
       <div class="preview-title">Kết quả</div>
-      <button class="btn btn-sm btn-ghost" onclick="show('home')">✕</button>
+      <button class="btn btn-sm btn-ghost" onclick="W.show('home')">✕</button>
     </div>
 
     <div class="strip-container">
-      <div class="photo-strip ${S.stripStyle}" id="photo-strip">
-        <div class="strip-photos">
-          ${S.photos.map(p => `<img src="${p}" class="strip-photo" alt="">`).join('')}
-        </div>
-        <div class="strip-footer">
-          <div class="strip-title" style="color:${textColor}">${S.stripTitle}</div>
-          <div class="strip-date">${formatDate(new Date())}</div>
-        </div>
+      <div class="strip-preview">
+        <img id="strip-img" src="" alt="Photo Strip">
       </div>
     </div>
 
     <div class="customize-section">
-      <div class="section-title">🎨 Kiểu khung</div>
-      <div class="strip-style-options">
-        ${[
-          { id: 'white', label: 'Trắng', bg: '#fff' },
-          { id: 'vintage', label: 'Vintage', bg: '#f5f0e8' },
-          { id: 'dark', label: 'Tối', bg: '#1a1a1a' },
-          { id: 'pink', label: 'Hồng', bg: '#fce4ec' },
-        ].map(s => `
-          <div class="style-option ${S.stripStyle === s.id ? 'active' : ''}"
-               onclick="setStripStyle('${s.id}')"
-               style="background:${s.bg}">
-            <div class="style-preview">
-              <div class="mini-rect"></div>
-              <div class="mini-rect"></div>
-              <div class="mini-rect"></div>
+      <div>
+        <div class="section-label">🎨 Kiểu khung</div>
+        <div class="style-chips">
+          ${[
+            {id:'white',label:'Trắng',bg:'#fff',c:'#333'},
+            {id:'vintage',label:'Vintage',bg:'#f5f0e8',c:'#5a4a3a'},
+            {id:'dark',label:'Tối',bg:'#1a1a1a',c:'#aaa'},
+            {id:'pink',label:'Hồng',bg:'#fce4ec',c:'#c2185b'},
+          ].map(s => `
+            <div class="style-chip ${S.stripStyle===s.id?'active':''}"
+                 onclick="W.setStyle('${s.id}')" title="${s.label}"
+                 style="background:${s.bg};color:${s.c}">
+              <div class="mini">
+                <div class="mini-bar"></div><div class="mini-bar"></div><div class="mini-bar"></div>
+              </div>
             </div>
-            <div class="style-label">${s.label}</div>
-          </div>
-        `).join('')}
+          `).join('')}
+        </div>
       </div>
 
-      <div class="section-title">✏️ Tiêu đề</div>
-      <input type="text" class="strip-title-input" id="strip-title-input"
-             value="${S.stripTitle}" placeholder="Nhập tiêu đề..."
-             oninput="updateStripTitle(this.value)">
+      <div>
+        <div class="section-label">✏️ Tiêu đề</div>
+        <input class="title-input" id="title-input" value="${S.stripTitle}"
+               placeholder="Nhập tiêu đề..." oninput="W.setTitle(this.value)">
+      </div>
     </div>
 
-    <div class="preview-actions">
-      <button class="btn btn-accent full-width" onclick="showPrintOptions()">
+    <div class="action-row">
+      <button class="btn btn-accent btn-block" onclick="W.show('print')">
         <span class="icon">🖨️</span> In ảnh
       </button>
-      <button class="btn btn-ghost" onclick="downloadCurrentStrip()">
-        <span class="icon">⬇️</span> Tải xuống
-      </button>
-      <button class="btn btn-ghost" onclick="saveAndShowToast()">
-        <span class="icon">💾</span> Lưu Gallery
-      </button>
-      <button class="btn btn-ghost" onclick="shareStrip()">
-        <span class="icon">↗️</span> Chia sẻ
-      </button>
+    </div>
+    <div class="action-row">
+      <button class="btn btn-ghost" onclick="W.downloadStrip()">⬇ Tải</button>
+      <button class="btn btn-ghost" onclick="W.saveStripToGallery()">💾 Lưu</button>
+      <button class="btn btn-ghost" onclick="W.shareStrip()">↗ Chia sẻ</button>
     </div>
   </div>`;
 }
 
-// ===== GALLERY =====
-function renderGalleryScreen() {
+// ----- PRINT OPTIONS -----
+function renderPrintOptions() {
+  const hasIP = !!S.printerIP;
+  const hasBT = !!navigator.bluetooth;
+
   return `
-  <div class="${screenClass('gallery')} gallery-screen" id="screen-gallery">
-    <div class="gallery-header">
-      <button class="btn btn-sm btn-ghost" onclick="show('home')">
-        <span class="icon">←</span> Về
-      </button>
-      <div class="preview-title">Gallery</div>
-      <button class="btn btn-sm btn-ghost" onclick="triggerUpload()">
-        <span class="icon">📁</span> Tải lên
-      </button>
+  <div class="screen active" id="screen-print">
+    <div class="preview-header">
+      <button class="btn btn-sm btn-ghost" onclick="W.show('preview')">← Quay lại</button>
+      <div class="preview-title">Chọn cách in</div>
+      <div style="width:60px"></div>
     </div>
 
-    <input type="file" id="upload-input" accept="image/*" multiple
-           style="display:none" onchange="handleUpload(this)">
+    <div class="strip-container">
+      <div class="strip-preview" style="max-width:180px">
+        <img src="${S.currentStrip || ''}" alt="">
+      </div>
+    </div>
+
+    <div class="print-cards">
+      <div class="print-card" onclick="W.doPrintEpson()">
+        <div class="print-card-icon wifi">🌐</div>
+        <div class="print-card-info">
+          <h3>In qua WiFi (ePOS)</h3>
+          <p>${hasIP ? `<b>${S.printerIP}</b> — nhấn để in ngay!` : 'Cài đặt IP máy in trước'}</p>
+        </div>
+      </div>
+
+      <div class="print-card" onclick="W.openSimulator()">
+        <div class="print-card-icon sim">🧪</div>
+        <div class="print-card-info">
+          <h3>Giả lập máy in</h3>
+          <p>Xem trước kết quả in trên giấy nhiệt 80mm</p>
+        </div>
+      </div>
+
+      <div class="print-card" onclick="W.shareStrip()">
+        <div class="print-card-icon save">📤</div>
+        <div class="print-card-info">
+          <h3>Lưu & Chia sẻ</h3>
+          <p>Tải ảnh về hoặc chia sẻ qua app</p>
+        </div>
+      </div>
+
+      <div class="print-card" onclick="W.printViaSystem()">
+        <div class="print-card-icon sys">🖨️</div>
+        <div class="print-card-info">
+          <h3>In qua hệ thống</h3>
+          <p>Mở hộp thoại in macOS/Windows</p>
+        </div>
+      </div>
+
+      ${hasBT ? `
+      <div class="print-card" onclick="W.printViaBluetooth()">
+        <div class="print-card-icon bt">🔵</div>
+        <div class="print-card-info">
+          <h3>Bluetooth BLE (thử nghiệm)</h3>
+          <p>Kết nối BLE trực tiếp — Chrome only</p>
+        </div>
+      </div>` : ''}
+    </div>
+  </div>`;
+}
+
+// ----- GALLERY -----
+function renderGallery() {
+  return `
+  <div class="screen active gallery-screen" id="screen-gallery">
+    <div class="gallery-header">
+      <button class="btn btn-sm btn-ghost" onclick="W.show('home')">← Về</button>
+      <div class="preview-title">Gallery</div>
+      <button class="btn btn-sm btn-ghost" onclick="W.triggerUpload()">📁 Tải lên</button>
+    </div>
 
     ${S.gallery.length === 0 ? `
       <div class="gallery-empty">
         <div class="icon">🖼️</div>
-        <p>Chưa có ảnh nào.</p>
-        <button class="btn btn-accent" onclick="triggerUpload()" style="margin-top:16px">
-          <span class="icon">📁</span> Tải ảnh lên từ máy
-        </button>
-        <button class="btn btn-ghost" onclick="startSession()" style="margin-top:8px">
-          <span class="icon">📸</span> Hoặc chụp mới
-        </button>
+        <p>Chưa có ảnh nào</p>
+        <button class="btn btn-accent mt-16" onclick="W.triggerUpload()">📁 Tải ảnh lên</button>
+        <button class="btn btn-ghost mt-8" onclick="W.startSession()">📸 Hoặc chụp mới</button>
       </div>
     ` : `
       <div style="padding:8px 16px">
-        <button class="btn btn-accent btn-block" onclick="triggerUpload()">
-          <span class="icon">📁</span> Tải thêm ảnh
-        </button>
+        <button class="btn btn-accent btn-block" onclick="W.triggerUpload()">📁 Tải thêm ảnh</button>
       </div>
       <div class="gallery-grid">
         ${S.gallery.map(g => `
-          <div class="gallery-item" onclick="viewGalleryItem('${g.id}')">
+          <div class="gallery-card" onclick="W.viewGalleryItem('${g.id}')">
             <img src="${g.dataUrl}" alt="${g.title}">
-            <div class="gallery-item-info">
-              <div class="gallery-item-date">${formatDate(g.date)}</div>
+            <div class="gallery-card-footer">
+              <div class="gallery-card-date">${formatDate(g.date)}</div>
             </div>
           </div>
         `).join('')}
@@ -1332,254 +815,200 @@ function renderGalleryScreen() {
   </div>`;
 }
 
-// ===== ACTIONS =====
-function startSession() {
-  S.photos = [];
-  S.currentStrip = null;
-  show('camera');
+// ----- SETUP -----
+function renderSetup() {
+  return `
+  <div class="screen active setup-screen" id="screen-setup">
+    <div class="setup-icon">🖨️</div>
+    <div class="setup-title">Cài đặt máy in</div>
+    <div class="setup-desc">
+      Kết nối TM-m30II qua WiFi để in tự động.<br>
+      App sẽ tự cài đúng khổ giấy 80mm.
+    </div>
+
+    <input class="ip-input" id="ip-input" type="text"
+           value="${S.printerIP}" placeholder="192.168.1.xxx"
+           inputmode="decimal">
+
+    <button class="btn btn-accent btn-block" onclick="W.savePrinterIP()">
+      🔗 Kết nối & Lưu
+    </button>
+
+    <div class="setup-steps">
+      <h3>📋 Hướng dẫn kết nối WiFi cho TM-m30II</h3>
+      <div class="setup-step">
+        <div class="setup-step-num">1</div>
+        <div>Mở app <b>Epson TM Utility</b> trên iPhone</div>
+      </div>
+      <div class="setup-step">
+        <div class="setup-step-num">2</div>
+        <div>Nhấn <b>"Wi-Fi® Setup Wizard"</b></div>
+      </div>
+      <div class="setup-step">
+        <div class="setup-step-num">3</div>
+        <div>Chọn mạng WiFi cùng mạng với thiết bị</div>
+      </div>
+      <div class="setup-step">
+        <div class="setup-step-num">4</div>
+        <div>Sau khi kết nối, vào <b>"View Printer Status"</b> → tìm <b>IP Address</b></div>
+      </div>
+      <div class="setup-step">
+        <div class="setup-step-num">5</div>
+        <div>Nhập IP vào ô trên → nhấn <b>Kết nối</b></div>
+      </div>
+    </div>
+
+    <button class="btn btn-ghost btn-block" onclick="W.show('home')">← Về trang chủ</button>
+  </div>`;
 }
 
-function cancelSession() {
-  stopCamera();
-  S.photos = [];
-  show('home');
+// =============================================
+// SYSTEM PRINT & BLUETOOTH
+// =============================================
+function printViaSystem() {
+  if (!S.currentStrip) return;
+  const win = window.open('', '_blank');
+  if (!win) { toast('Popup bị chặn!', 'error'); return; }
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>In</title>
+<style>@page{size:80mm auto;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{background:#f5f5f5;display:flex;flex-direction:column;align-items:center;padding:24px;font-family:-apple-system,sans-serif}
+img{max-width:300px;width:100%;border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,.15)}.btn{margin-top:16px;padding:12px 24px;border:none;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;background:#007AFF;color:#fff}
+.hint{margin-top:12px;font-size:13px;color:#888;text-align:center;line-height:1.6}b{color:#333}
+@media print{.no-print{display:none!important}body{background:#fff;padding:0}img{max-width:none;width:80mm;border-radius:0;box-shadow:none}}</style></head>
+<body><img src="${S.currentStrip}"><button class="btn no-print" onclick="window.print()">🖨️ In</button>
+<p class="hint no-print">Chọn <b>TM-m30II</b> · Khổ <b>80mm</b> · Tỷ lệ <b>100%</b></p></body></html>`);
+  win.document.close();
 }
 
-function retakePhotos() {
-  S.photos = [];
-  S.currentStrip = null;
-  show('camera');
-}
+async function printViaBluetooth() {
+  if (!S.currentStrip || !navigator.bluetooth) {
+    toast('Cần Chrome + Bluetooth', 'error'); return;
+  }
+  try {
+    toast('Tìm máy in BLE...', 'info');
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{namePrefix:'TM-m30'},{namePrefix:'EPSON'}],
+      optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb','49535343-fe7d-4ae5-8fa9-9fafd205e455'],
+      acceptAllDevices: false,
+    }).catch(() => navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb','49535343-fe7d-4ae5-8fa9-9fafd205e455'],
+    }));
 
-function setFilter(f) {
-  S.filter = f;
-  applyFilterToVideo();
-  // Update filter chips
-  $$('.filter-chip').forEach(el => el.classList.remove('active'));
-  event.currentTarget.classList.add('active');
-  // Update label
-  const labels = { none: 'Gốc', bw: 'B&W', sepia: 'Sepia', vintage: 'Vintage', cool: 'Cool', warm: 'Warm' };
-  const label = $('.camera-filter-label');
-  if (label) label.textContent = labels[f];
-}
-
-function setStripStyle(style) {
-  S.stripStyle = style;
-  render();
-}
-
-function updateStripTitle(val) {
-  S.stripTitle = val;
-  const titleEl = $('.strip-title');
-  if (titleEl) titleEl.textContent = val;
-}
-
-async function startAutoSequence() {
-  // Auto-capture remaining photos with countdown
-  if (S.photos.length >= S.maxPhotos) return;
-  startCaptureSequence();
-}
-
-async function downloadCurrentStrip() {
-  toast('Đang tạo ảnh...', 'info');
-  await composeStrip();
-  downloadStrip();
-}
-
-async function saveAndShowToast() {
-  await composeStrip();
-  saveToGallery();
-}
-
-async function shareStrip() {
-  await composeStrip();
-  if (navigator.share && S.currentStrip) {
-    try {
-      const blob = await (await fetch(S.currentStrip)).blob();
-      const file = new File([blob], 'photobooth.jpg', { type: 'image/jpeg' });
-      await navigator.share({
-        title: S.stripTitle,
-        files: [file],
-      });
-    } catch (e) {
-      if (e.name !== 'AbortError') {
-        toast('Không thể chia sẻ', 'error');
-      }
+    toast(`Kết nối ${device.name}...`, 'info');
+    const server = await device.gatt.connect();
+    let writeChar = null;
+    for (const svc of await server.getPrimaryServices()) {
+      try {
+        for (const ch of await svc.getCharacteristics()) {
+          if (ch.properties.write || ch.properties.writeWithoutResponse) { writeChar = ch; break; }
+        }
+        if (writeChar) break;
+      } catch {}
     }
-  } else {
-    downloadStrip();
-    toast('Đã tải xuống (chia sẻ không khả dụng)', 'info');
+    if (!writeChar) { toast('Không tìm thấy kênh BLE', 'error'); server.disconnect(); return; }
+
+    toast('Gửi ảnh...', 'info');
+    const img = await loadImage(S.currentStrip);
+    const c = document.createElement('canvas'); c.width=576; c.height=Math.round((img.height/img.width)*576);
+    const cx = c.getContext('2d'); cx.drawImage(img,0,0,c.width,c.height);
+    const data = buildEscPosRaster(cx.getImageData(0,0,c.width,c.height), c.width, c.height);
+
+    for (let i=0; i<data.length; i+=200) {
+      const chunk = data.slice(i, i+200);
+      try {
+        if (writeChar.properties.writeWithoutResponse) await writeChar.writeValueWithoutResponse(chunk);
+        else await writeChar.writeValue(chunk);
+      } catch { for (let j=0;j<chunk.length;j+=20){const m=chunk.slice(j,j+20);await writeChar.writeValueWithoutResponse(m);await wait(10);} }
+      await wait(20);
+    }
+    toast('✅ In thành công!', 'success');
+    server.disconnect();
+  } catch (err) {
+    if (err.name !== 'NotFoundError') toast('Lỗi BLE: '+err.message, 'error');
   }
 }
 
+function buildEscPosRaster(imageData, w, h) {
+  const px = imageData.data;
+  const gray = new Float32Array(w*h);
+  for(let i=0;i<w*h;i++) gray[i]=0.299*px[i*4]+0.587*px[i*4+1]+0.114*px[i*4+2];
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){const i=y*w+x;const o=gray[i];const v=o<128?0:255;gray[i]=v;const e=o-v;if(x+1<w)gray[i+1]+=e*7/16;if(y+1<h){if(x>0)gray[(y+1)*w+x-1]+=e*3/16;gray[(y+1)*w+x]+=e*5/16;if(x+1<w)gray[(y+1)*w+x+1]+=e/16;}}
+  const bpr=Math.ceil(w/8); const buf=[0x1B,0x40, 0x1D,0x76,0x30,0x00, bpr&0xFF,(bpr>>8)&0xFF, h&0xFF,(h>>8)&0xFF];
+  for(let y=0;y<h;y++) for(let xb=0;xb<bpr;xb++){let b=0;for(let bit=0;bit<8;bit++){const x=xb*8+bit;if(x<w&&gray[y*w+x]<128)b|=(0x80>>bit);}buf.push(b);}
+  buf.push(0x1B,0x64,0x05, 0x1D,0x56,0x41,0x03);
+  return new Uint8Array(buf);
+}
 
-
+// =============================================
+// GALLERY ITEM ACTIONS
+// =============================================
 function viewGalleryItem(id) {
   const item = S.gallery.find(g => g.id === id);
   if (!item) return;
-
   S.currentStrip = item.dataUrl;
   S.stripTitle = item.title || 'Photo Booth';
-
-  // Build a simple view
-  const screen = $('#screen-gallery');
-  screen.innerHTML = `
-    <div class="preview-header">
-      <button class="btn btn-sm btn-ghost" onclick="openGallery()">
-        <span class="icon">←</span> Gallery
-      </button>
-      <div class="preview-title">${item.title || 'Photo'}</div>
-      <button class="btn btn-sm btn-danger" onclick="deleteFromGallery('${id}')">🗑️</button>
-    </div>
-    <div class="strip-container" style="padding-top:16px">
-      <img src="${item.dataUrl}" style="max-width:320px;width:100%;border-radius:4px;box-shadow:0 8px 40px rgba(0,0,0,.6)">
-    </div>
-    <div class="preview-actions" style="margin-top:16px">
-      <button class="btn btn-ghost" onclick="downloadGalleryItem('${id}')">
-        <span class="icon">⬇️</span> Tải
-      </button>
-      <button class="btn btn-ghost" onclick="shareGalleryItem('${id}')">
-        <span class="icon">↗️</span> Chia sẻ
-      </button>
-      <button class="btn btn-accent full-width" onclick="printGalleryItem('${id}')">
-        <span class="icon">🖨️</span> In ảnh
-      </button>
-    </div>
-  `;
+  show('print');
 }
 
-function downloadGalleryItem(id) {
-  const item = S.gallery.find(g => g.id === id);
-  if (!item) return;
-  S.currentStrip = item.dataUrl;
-  downloadStrip();
+function deleteFromGallery(id) {
+  S.gallery = S.gallery.filter(g => g.id !== id);
+  saveGallery();
+  show('gallery');
+  toast('Đã xóa', 'info');
 }
 
-async function shareGalleryItem(id) {
-  const item = S.gallery.find(g => g.id === id);
-  if (!item) return;
-  S.currentStrip = item.dataUrl;
-  S.stripTitle = item.title;
-  await shareStrip();
+// =============================================
+// SHORTCUT ACTIONS
+// =============================================
+function startSession() { S.photos = []; S.currentStrip = null; show('camera'); }
+function cancelSession() { stopCamera(); S.photos = []; show('home'); }
+function retake() { S.photos = []; S.currentStrip = null; show('camera'); }
+function setFilter(f) {
+  S.filter = f;
+  const v = $('#viewfinder');
+  if (v) v.style.filter = getFilterCSS(f);
+  $$('.filter-chip').forEach(el => el.classList.remove('active'));
+  event?.currentTarget?.classList.add('active');
+}
+function setStyle(id) {
+  S.stripStyle = id;
+  S.currentStrip = null;
+  render();
+}
+function setTitle(val) {
+  S.stripTitle = val;
+  S.currentStrip = null;
+}
+function doPrintEpson() {
+  if (!S.printerIP) { show('setup'); return; }
+  printViaEpson();
 }
 
-async function printGalleryItem(id) {
-  const item = S.gallery.find(g => g.id === id);
-  if (!item) return;
-  S.currentStrip = item.dataUrl;
-  showPrintOptions();
-}
+// =============================================
+// EXPOSE TO WINDOW (for inline onclick)
+// =============================================
+const W = {
+  show, render, startSession, cancelSession, retake,
+  capturePhoto, startAutoCapture, flipCamera, setFilter,
+  setStyle, setTitle,
+  downloadStrip, saveStripToGallery, shareStrip,
+  doPrintEpson, openSimulator, printViaSystem, printViaBluetooth,
+  savePrinterIP, triggerUpload,
+  viewGalleryItem, deleteFromGallery,
+};
+window.W = W;
 
-/**
- * Trigger file upload input
- */
-function triggerUpload() {
-  const input = document.getElementById('upload-input');
-  if (input) {
-    input.click();
-  } else {
-    // Create one on the fly (for home screen)
-    const inp = document.createElement('input');
-    inp.type = 'file';
-    inp.accept = 'image/*';
-    inp.multiple = true;
-    inp.style.display = 'none';
-    inp.onchange = () => handleUpload(inp);
-    document.body.appendChild(inp);
-    inp.click();
-    setTimeout(() => inp.remove(), 60000);
-  }
-}
+// =============================================
+// INIT
+// =============================================
+loadGallery();
 
-/**
- * Handle uploaded files — add each to gallery
- */
-async function handleUpload(input) {
-  const files = input.files;
-  if (!files || files.length === 0) return;
-
-  toast(`Đang tải ${files.length} ảnh...`, 'info');
-
-  let count = 0;
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue;
-
-    try {
-      const dataUrl = await readFileAsDataURL(file);
-
-      const item = {
-        id: 'upload_' + Date.now() + '_' + count,
-        dataUrl: dataUrl,
-        date: new Date().toISOString(),
-        title: file.name.replace(/\.[^/.]+$/, '') || 'Uploaded',
-      };
-
-      S.gallery.unshift(item);
-      count++;
-    } catch (e) {
-      console.error('Upload error:', e);
-    }
-  }
-
-  if (count > 0) {
-    localStorage.setItem('photobooth_gallery', JSON.stringify(S.gallery));
-    toast(`✓ Đã tải lên ${count} ảnh!`, 'success');
-    show('gallery');
-  }
-
-  // Reset input
-  input.value = '';
-}
-
-/**
- * Read file as data URL
- */
-function readFileAsDataURL(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
+// Test printer connection on load
+if (S.printerIP) {
+  testPrinterConnection(S.printerIP).then(ok => {
+    S.printerConnected = ok;
+    render(); // Re-render with connection status
   });
 }
 
-function openGallery() {
-  show('gallery');
-}
-
-// ===== EXPOSE TO WINDOW =====
-window.startSession = startSession;
-window.cancelSession = cancelSession;
-window.retakePhotos = retakePhotos;
-window.captureSingle = captureSingle;
-window.startAutoSequence = startAutoSequence;
-window.setFilter = setFilter;
-window.setStripStyle = setStripStyle;
-window.updateStripTitle = updateStripTitle;
-window.flipCamera = flipCamera;
-window.downloadCurrentStrip = downloadCurrentStrip;
-window.saveAndShowToast = saveAndShowToast;
-window.shareStrip = shareStrip;
-window.showPrintOptions = showPrintOptions;
-window.printViaBrowser = saveAndPrint; // legacy alias
-window.saveAndPrint = saveAndPrint;
-window.printViaBluetooth = printViaBluetooth;
-window.printViaSystem = printViaSystem;
-window.printViaEpson = printViaEpson;
-window.showPrinterIPSetup = showPrinterIPSetup;
-window.savePrinterIPAndPrint = savePrinterIPAndPrint;
-window.openGallery = openGallery;
-window.viewGalleryItem = viewGalleryItem;
-window.deleteFromGallery = deleteFromGallery;
-window.downloadGalleryItem = downloadGalleryItem;
-window.shareGalleryItem = shareGalleryItem;
-window.printGalleryItem = printGalleryItem;
-window.show = show;
-window.render = render;
-window.triggerUpload = triggerUpload;
-window.handleUpload = handleUpload;
-window.printSimulator = printSimulator;
-
-// ===== INIT =====
-loadGallery();
 render();
