@@ -572,45 +572,51 @@ async function composeRetro(photos, W) {
 }
 
 // =============================================
-// EPSON ePOS PRINT (WiFi/IP) — WebSocket (Socket.IO v1)
-// TM-m30II uses Socket.IO on port 8008 (ws) / 8043 (wss)
+// EPSON ePOS PRINT — TCP:9100 via server proxy
+// Uses ESC/POS commands on raw socket (proven working!)
+// Dev server provides /api/print and /api/test-printer
 // =============================================
 
-/** Test printer connection via Socket.IO handshake */
+/** Test printer connection via TCP:9100 proxy */
 async function testPrinterConnection(ip) {
-  // Try HTTP first (works from localhost), then HTTPS
+  try {
+    const resp = await fetch('/api/test-printer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const result = await resp.json();
+    if (result.success) {
+      S._printerProto = 'tcp';
+      S._printerPort = 9100;
+      return true;
+    }
+  } catch { /* proxy not available, try direct WebSocket */ }
+
+  // Fallback: try Socket.IO handshake (for when proxy is not available)
   for (const [proto, port] of [['http', 8008], ['https', 8043]]) {
     try {
-      const url = `${proto}://${ip}:${port}/socket.io/1/`;
-      const resp = await fetch(url, { signal: AbortSignal.timeout(4000) });
+      const resp = await fetch(`${proto}://${ip}:${port}/socket.io/1/`, {
+        signal: AbortSignal.timeout(4000),
+      });
       if (resp.ok) {
         const text = await resp.text();
-        // Socket.IO v1 returns: SESSION_ID:heartbeat:close:transports
         if (text && text.includes(':')) {
           S._printerProto = proto;
           S._printerPort = port;
-          S._wsProto = proto === 'https' ? 'wss' : 'ws';
           return true;
         }
       }
     } catch { /* try next */ }
   }
+
   S._printerProto = null;
   S._printerPort = null;
-  S._wsProto = null;
   return false;
 }
 
-/** Get Socket.IO session ID */
-async function getSocketSession(ip, proto, port) {
-  const url = `${proto}://${ip}:${port}/socket.io/1/`;
-  const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
-  const text = await resp.text();
-  // Format: "SESSION_ID:HEARTBEAT:CLOSE_TIMEOUT:TRANSPORTS"
-  return text.split(':')[0];
-}
-
-/** Print via WebSocket — the actual print command */
+/** Print via TCP:9100 proxy (ESC/POS raster) */
 async function printViaEpson(imageDataUrl) {
   const ip = S.printerIP;
   if (!ip) { show('setup'); return; }
@@ -618,7 +624,7 @@ async function printViaEpson(imageDataUrl) {
   toast('Đang chuẩn bị in...', 'info');
 
   try {
-    // 1. Prepare image
+    // 1. Prepare image — resize to 576px width for 80mm paper
     const img = await loadImage(imageDataUrl || S.currentStrip);
     const canvas = document.createElement('canvas');
     canvas.width = 576;
@@ -629,84 +635,34 @@ async function printViaEpson(imageDataUrl) {
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const rasterBase64 = toMonoRaster(imageData, canvas.width, canvas.height);
 
-    // 2. Detect protocol if needed
-    if (!S._printerProto) {
-      toast('Đang kết nối máy in...', 'info');
-      const ok = await testPrinterConnection(ip);
-      if (!ok) {
-        toast('❌ Không kết nối được. Kiểm tra WiFi.', 'error');
-        return;
-      }
-    }
-
-    // 3. Get session ID
+    // 2. Send to printer via proxy
     toast('Đang gửi đến máy in...', 'info');
-    const sessionId = await getSocketSession(ip, S._printerProto, S._printerPort);
 
-    // 4. Open WebSocket
-    const wsUrl = `${S._wsProto}://${ip}:${S._printerPort}/socket.io/1/websocket/${sessionId}`;
-    
-    await new Promise((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
-      let responded = false;
-      const timeout = setTimeout(() => {
-        if (!responded) { ws.close(); reject(new Error('Timeout')); }
-      }, 15000);
-
-      ws.onopen = () => {
-        // Socket.IO v1: send connect message, then the XML print command
-        // The XML is sent as a message (type 5 = event, or type 3 = message)
-        const xmlCmd = `<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">` +
-          `<image width="${canvas.width}" height="${canvas.height}" color="color_1" mode="mono">${rasterBase64}</image>` +
-          `<feed unit="30"/>` +
-          `<cut type="feed"/>` +
-          `</epos-print>`;
-        
-        // Socket.IO v1 message format: TYPE:ENDPOINT:DATA
-        // Type 3 = message
-        ws.send('3:::' + xmlCmd);
-      };
-
-      ws.onmessage = (evt) => {
-        const data = evt.data;
-        // Check for success response
-        if (data && (data.includes('success="true"') || data.includes('code=""') || data.includes('response'))) {
-          responded = true;
-          clearTimeout(timeout);
-          S.printerConnected = true;
-          toast('✅ In thành công!', 'success');
-          ws.close();
-          resolve();
-        }
-        // Socket.IO heartbeat — respond with pong
-        if (data === '2::') {
-          ws.send('2::');
-        }
-      };
-
-      ws.onerror = (err) => {
-        clearTimeout(timeout);
-        reject(new Error('WebSocket error'));
-      };
-
-      ws.onclose = () => {
-        clearTimeout(timeout);
-        if (!responded) {
-          // If we sent the command and it closed without error, 
-          // the printer might have accepted it
-          toast('📤 Đã gửi lệnh in. Kiểm tra máy in.', 'info');
-          resolve();
-        }
-      };
+    const resp = await fetch('/api/print', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ip,
+        width: canvas.width,
+        height: canvas.height,
+        rasterBase64,
+      }),
+      signal: AbortSignal.timeout(15000),
     });
 
+    const result = await resp.json();
+    if (result.success) {
+      toast('✅ In thành công!', 'success');
+      S.printerConnected = true;
+    } else {
+      toast('❌ Lỗi: ' + (result.error || 'Unknown'), 'error');
+    }
   } catch (err) {
     S.printerConnected = false;
-    S._printerProto = null;
-    if (err.message === 'Timeout') {
+    if (err.name === 'AbortError' || err.name === 'TimeoutError') {
       toast('⏱ Hết thời gian chờ', 'error');
-    } else if (err.message?.includes('WebSocket') || err.name === 'SecurityError') {
-      toast('🔒 WebSocket bị chặn. Thử mở http://IP:8008 trong trình duyệt trước.', 'error');
+    } else if (err.message?.includes('Failed to fetch')) {
+      toast('⚠️ Cần chạy dev server (npm run dev) để in qua WiFi', 'error');
     } else {
       toast('❌ Lỗi: ' + err.message, 'error');
     }
