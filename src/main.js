@@ -246,7 +246,7 @@ async function composeStrip() {
   S.currentStrip = await compose(photos, WIDTH);
 }
 
-/** Helper: draw image with cover-fit crop */
+/** Helper: draw image with cover-fit crop + apply current filter */
 function drawCover(ctx, img, x, y, w, h, radius = 0) {
   const srcAspect = img.width / img.height;
   const destAspect = w / h;
@@ -254,16 +254,20 @@ function drawCover(ctx, img, x, y, w, h, radius = 0) {
   if (srcAspect > destAspect) { sw = img.height * destAspect; sx = (img.width - sw) / 2; }
   else { sh = img.width / destAspect; sy = (img.height - sh) / 2; }
 
+  // Apply CSS filter during canvas drawing
+  const filterCSS = getFilterCSS(S.filter);
+  ctx.save();
+  if (filterCSS !== 'none') ctx.filter = filterCSS;
+
   if (radius > 0) {
-    ctx.save();
     ctx.beginPath();
     ctx.roundRect(x, y, w, h, radius);
     ctx.clip();
     ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
-    ctx.restore();
   } else {
     ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
   }
+  ctx.restore();
 }
 
 /** Helper: draw footer text */
@@ -774,11 +778,18 @@ function triggerUpload() {
 
 async function handleUpload(files) {
   if (!files || files.length === 0) return;
-  toast(`Đang tải ${files.length} ảnh...`, 'info');
 
-  let count = 0;
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue;
+  // Take up to maxPhotos images
+  const toLoad = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, S.maxPhotos);
+  if (toLoad.length === 0) return;
+
+  toast(`Đang tải ${toLoad.length} ảnh...`, 'info');
+
+  // Load images into S.photos for composition
+  S.photos = [];
+  S.currentStrip = null;
+
+  for (const file of toLoad) {
     try {
       const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -786,19 +797,13 @@ async function handleUpload(files) {
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      S.gallery.unshift({
-        id: 'up_' + Date.now() + '_' + count,
-        dataUrl,
-        date: new Date().toISOString(),
-        title: file.name.replace(/\.[^/.]+$/, ''),
-      });
-      count++;
+      S.photos.push(dataUrl);
     } catch (e) { console.error(e); }
   }
-  if (count > 0) {
-    saveGallery();
-    toast(`✅ Đã tải ${count} ảnh`, 'success');
-    show('gallery');
+
+  if (S.photos.length > 0) {
+    toast(`✅ ${S.photos.length} ảnh — chọn khung & filter!`, 'success');
+    show('preview');
   }
 }
 
@@ -993,6 +998,15 @@ function renderPreview() {
               <div class="frame-card-name">${f.name}</div>
             </div>
           `).join('')}
+        </div>
+      </div>
+
+      <div>
+        <div class="section-label">🎨 Bộ lọc</div>
+        <div class="filter-bar">
+          ${Object.entries(FILTERS).map(([id, f]) =>
+            `<div class="filter-chip ${S.filter===id?'active':''}" onclick="W.setFilterPreview('${id}')">${f.label}</div>`
+          ).join('')}
         </div>
       </div>
 
@@ -1290,6 +1304,11 @@ function setFilter(f) {
   $$('.filter-chip').forEach(el => el.classList.remove('active'));
   event?.currentTarget?.classList.add('active');
 }
+function setFilterPreview(f) {
+  S.filter = f;
+  S.currentStrip = null;
+  render();
+}
 function setStyle(id) {
   S.stripStyle = id;
   S.currentStrip = null;
@@ -1314,7 +1333,7 @@ function doPrintEpson() {
 // =============================================
 const W = {
   show, render, startSession, cancelSession, retake,
-  capturePhoto, startAutoCapture, flipCamera, setFilter,
+  capturePhoto, startAutoCapture, flipCamera, setFilter, setFilterPreview,
   setStyle, setFrame, setTitle,
   downloadStrip, saveStripToGallery, shareStrip,
   doPrintEpson, openSimulator, printViaSystem, printViaBluetooth,
