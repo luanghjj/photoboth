@@ -572,28 +572,60 @@ async function composeRetro(photos, W) {
 }
 
 // =============================================
-// EPSON ePOS PRINT (WiFi/IP)
+// EPSON ePOS PRINT (WiFi/IP) — HTTPS + HTTP auto-detect
 // =============================================
+
+/** Build the ePOS service URL — try HTTPS first (for hosted sites like Vercel) */
+function getEposUrl(ip, timeout = 10000) {
+  // If we already know which protocol works, use it
+  if (S._printerProto) {
+    return `${S._printerProto}://${ip}:${S._printerPort}/cgi-bin/epos/service.cgi?devid=local_printer&timeout=${timeout}`;
+  }
+  // Default: try HTTPS first (needed for Vercel/HTTPS sites)
+  return `https://${ip}:8043/cgi-bin/epos/service.cgi?devid=local_printer&timeout=${timeout}`;
+}
+
+/** Test connection — tries HTTPS:8043 first, then HTTP:8008 */
 async function testPrinterConnection(ip) {
-  try {
-    const url = `http://${ip}:8008/cgi-bin/epos/service.cgi?devid=local_printer&timeout=5000`;
-    const testXml = `<?xml version="1.0" encoding="utf-8"?>
+  const testXml = `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
     <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
     </epos-print>
   </s:Body>
 </s:Envelope>`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '""' },
-      body: testXml,
+
+  const headers = { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '""' };
+
+  // Try 1: HTTPS on port 8043 (works from Vercel/HTTPS hosted sites)
+  try {
+    const resp = await fetch(`https://${ip}:8043/cgi-bin/epos/service.cgi?devid=local_printer&timeout=5000`, {
+      method: 'POST', headers, body: testXml,
       signal: AbortSignal.timeout(5000),
     });
-    return resp.ok;
-  } catch {
-    return false;
-  }
+    if (resp.ok) {
+      S._printerProto = 'https';
+      S._printerPort = 8043;
+      return true;
+    }
+  } catch { /* HTTPS failed, try HTTP */ }
+
+  // Try 2: HTTP on port 8008 (works locally / same network without HTTPS restriction)
+  try {
+    const resp = await fetch(`http://${ip}:8008/cgi-bin/epos/service.cgi?devid=local_printer&timeout=5000`, {
+      method: 'POST', headers, body: testXml,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (resp.ok) {
+      S._printerProto = 'http';
+      S._printerPort = 8008;
+      return true;
+    }
+  } catch { /* HTTP also failed */ }
+
+  S._printerProto = null;
+  S._printerPort = null;
+  return false;
 }
 
 async function printViaEpson(imageDataUrl) {
@@ -625,7 +657,13 @@ async function printViaEpson(imageDataUrl) {
 </s:Envelope>`;
 
     toast('Đang gửi đến máy in...', 'info');
-    const url = `http://${ip}:8008/cgi-bin/epos/service.cgi?devid=local_printer&timeout=30000`;
+
+    // Try the known protocol, or detect
+    if (!S._printerProto) {
+      await testPrinterConnection(ip);
+    }
+
+    const url = getEposUrl(ip, 30000);
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': '""' },
@@ -646,10 +684,13 @@ async function printViaEpson(imageDataUrl) {
     }
   } catch (err) {
     S.printerConnected = false;
+    S._printerProto = null;
     if (err.name === 'TimeoutError') {
-      toast('Hết thời gian chờ. Kiểm tra máy in.', 'error');
+      toast('⏱ Hết thời gian chờ', 'error');
+    } else if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
+      toast('🔒 Cần mở chứng chỉ SSL trước — xem hướng dẫn bên dưới', 'error');
     } else {
-      toast('Không kết nối được: ' + err.message, 'error');
+      toast('❌ Lỗi: ' + err.message, 'error');
     }
   }
 }
@@ -855,19 +896,29 @@ async function savePrinterIP() {
     return;
   }
 
-  toast('Đang kiểm tra kết nối...', 'info');
+  toast('Đang kiểm tra kết nối (HTTPS → HTTP)...', 'info');
   S.printerIP = ip;
+  S._printerProto = null;
   localStorage.setItem('epson_printer_ip', ip);
 
   const ok = await testPrinterConnection(ip);
   S.printerConnected = ok;
   if (ok) {
-    toast('✅ Kết nối thành công!', 'success');
+    toast(`✅ Kết nối thành công qua ${S._printerProto}:${S._printerPort}!`, 'success');
     show('home');
   } else {
-    toast('⚠️ Đã lưu IP. Máy in chưa phản hồi — kiểm tra WiFi.', 'error');
-    show('home');
+    toast('⚠️ IP đã lưu. Cần mở chứng chỉ SSL → nhấn nút 🔒 bên dưới', 'error');
+    render(); // Stay on setup
   }
+}
+
+/** Open the printer's HTTPS URL so user can accept the self-signed certificate */
+function openSSLCert() {
+  const ip = S.printerIP;
+  if (!ip) { toast('Nhập IP trước', 'error'); return; }
+  const url = `https://${ip}:8043/cgi-bin/epos/service.cgi`;
+  toast(`Mở ${url} → Nhấn "Tiếp tục" hoặc "Proceed"`, 'info');
+  window.open(url, '_blank');
 }
 
 // =============================================
@@ -1151,13 +1202,15 @@ function renderGallery() {
 
 // ----- SETUP -----
 function renderSetup() {
+  const hasIP = !!S.printerIP;
+  const proto = S._printerProto ? `${S._printerProto}:${S._printerPort}` : 'chưa xác định';
   return `
   <div class="screen active setup-screen" id="screen-setup">
     <div class="setup-icon">🖨️</div>
     <div class="setup-title">Cài đặt máy in</div>
     <div class="setup-desc">
       Kết nối TM-m30II qua WiFi để in tự động.<br>
-      App sẽ tự cài đúng khổ giấy 80mm.
+      App tự cài đúng khổ giấy 80mm + tự cắt.
     </div>
 
     <input class="ip-input" id="ip-input" type="text"
@@ -1168,27 +1221,45 @@ function renderSetup() {
       🔗 Kết nối & Lưu
     </button>
 
+    ${hasIP ? `
+    <button class="btn btn-ghost btn-block btn-sm" onclick="W.openSSLCert()">
+      🔒 Mở chứng chỉ SSL (bước quan trọng!)
+    </button>` : ''}
+
+    ${S.printerConnected ? `
+    <div style="text-align:center;color:#4ade80;font-size:13px;padding:8px;">
+      ✅ Đã kết nối qua ${proto}
+    </div>` : ''}
+
     <div class="setup-steps">
-      <h3>📋 Hướng dẫn kết nối WiFi cho TM-m30II</h3>
+      <h3>📋 Hướng dẫn kết nối</h3>
       <div class="setup-step">
         <div class="setup-step-num">1</div>
-        <div>Mở app <b>Epson TM Utility</b> trên iPhone</div>
+        <div>Mở <b>Epson TM Utility</b> trên iPhone/Android</div>
       </div>
       <div class="setup-step">
         <div class="setup-step-num">2</div>
-        <div>Nhấn <b>"Wi-Fi® Setup Wizard"</b></div>
+        <div>Nhấn <b>"Wi-Fi® Setup Wizard"</b> → kết nối máy in vào WiFi</div>
       </div>
       <div class="setup-step">
         <div class="setup-step-num">3</div>
-        <div>Chọn mạng WiFi cùng mạng với thiết bị</div>
+        <div>Vào <b>"View Printer Status"</b> → ghi lại <b>IP Address</b></div>
       </div>
       <div class="setup-step">
         <div class="setup-step-num">4</div>
-        <div>Sau khi kết nối, vào <b>"View Printer Status"</b> → tìm <b>IP Address</b></div>
+        <div>Nhập IP vào ô trên → nhấn <b>Kết nối</b></div>
       </div>
       <div class="setup-step">
-        <div class="setup-step-num">5</div>
-        <div>Nhập IP vào ô trên → nhấn <b>Kết nối</b></div>
+        <div class="setup-step-num" style="background:var(--red)">5</div>
+        <div>⚠️ <b>QUAN TRỌNG:</b> Nhấn nút <b>"🔒 Mở chứng chỉ SSL"</b> phía trên → trình duyệt hiện cảnh báo → nhấn <b>"Tiếp tục"</b> / <b>"Advanced → Proceed"</b></div>
+      </div>
+      <div class="setup-step">
+        <div class="setup-step-num">6</div>
+        <div>Quay lại app → nhấn <b>Kết nối</b> lại → ✅ Thành công</div>
+      </div>
+      <div class="setup-step">
+        <div class="setup-step-num">7</div>
+        <div>In thử → chọn <b>"In qua WiFi (ePOS)"</b></div>
       </div>
     </div>
 
@@ -1337,7 +1408,7 @@ const W = {
   setStyle, setFrame, setTitle,
   downloadStrip, saveStripToGallery, shareStrip,
   doPrintEpson, openSimulator, printViaSystem, printViaBluetooth,
-  savePrinterIP, triggerUpload,
+  savePrinterIP, openSSLCert, triggerUpload,
   viewGalleryItem, deleteFromGallery,
 };
 window.W = W;
