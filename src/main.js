@@ -668,6 +668,125 @@ async function composeOrigami(photos, W) {
 }
 
 // =============================================
+// DANKE-BELEG — pre-made thank you receipt for takeaway orders
+// =============================================
+async function printDankeBeleg() {
+  if (!S.printerIP) { show('setup'); return; }
+
+  toast('Danke-Beleg wird erstellt...', 'info');
+
+  try {
+    const W = 576; // 80mm paper width in px
+    const H = 700;
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+
+    // === White background ===
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+
+    // === Top decorative border ===
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(16, 12, W - 32, H - 24);
+
+    // Inner thin border
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(22, 18, W - 44, H - 36);
+
+    // === LOGO — centered ===
+    try {
+      const logo = await loadImage('/origami-logo.png');
+      const logoW = 340;
+      const logoH = Math.round((logo.height / logo.width) * logoW);
+      const logoX = (W - logoW) / 2;
+      const logoY = 40;
+      ctx.drawImage(logo, logoX, logoY, logoW, logoH);
+
+      // === Decorative line under logo ===
+      const lineY = logoY + logoH + 20;
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(60, lineY);
+      ctx.lineTo(W - 60, lineY);
+      ctx.stroke();
+
+      // Small dots
+      ctx.fillStyle = '#333';
+      ctx.font = '14px serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('◆  ◆  ◆', W / 2, lineY + 18);
+
+      // === Thank you message (German) ===
+      const msgY = lineY + 50;
+
+      ctx.fillStyle = '#1a1a1a';
+      ctx.font = 'bold 22px Georgia, "Times New Roman", serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Vielen Dank', W / 2, msgY);
+
+      ctx.font = '17px Georgia, serif';
+      ctx.fillText('für Ihre Bestellung!', W / 2, msgY + 28);
+
+      // Spacer
+      ctx.fillStyle = '#555';
+      ctx.font = '12px serif';
+      ctx.fillText('─────────────', W / 2, msgY + 55);
+
+      // Friendly message
+      ctx.fillStyle = '#333';
+      ctx.font = 'italic 14px Georgia, serif';
+      ctx.fillText('Wir hoffen, es schmeckt Ihnen!', W / 2, msgY + 80);
+      ctx.fillText('Wir freuen uns auf Ihren', W / 2, msgY + 102);
+      ctx.fillText('nächsten Besuch.', W / 2, msgY + 122);
+
+      // === Separator ===
+      ctx.fillStyle = '#555';
+      ctx.font = '12px serif';
+      ctx.fillText('─────────────', W / 2, msgY + 150);
+
+      // === Social / info ===
+      ctx.fillStyle = '#444';
+      ctx.font = '13px Inter, Arial, sans-serif';
+      ctx.fillText('Ihr ORIGAMI Team', W / 2, msgY + 178);
+
+      // Date & time
+      ctx.fillStyle = '#888';
+      ctx.font = '11px Inter, Arial, sans-serif';
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('de-DE', {
+        weekday: 'long', day: '2-digit', month: 'long', year: 'numeric'
+      });
+      const timeStr = now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+      ctx.fillText(`${dateStr}, ${timeStr} Uhr`, W / 2, msgY + 200);
+
+      // === Bottom ornament ===
+      ctx.fillStyle = '#333';
+      ctx.font = '14px serif';
+      ctx.fillText('◆  ◆  ◆', W / 2, msgY + 230);
+
+    } catch (logoErr) {
+      // If logo fails, just print text
+      ctx.fillStyle = '#1a1a1a';
+      ctx.font = 'bold 36px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('ORIGAMI', W / 2, 80);
+      ctx.font = '14px Georgia, serif';
+      ctx.fillText('Sushi & Asian Cuisine', W / 2, 105);
+    }
+
+    // Convert to image and print
+    const dataUrl = c.toDataURL('image/png');
+    await printViaEpson(dataUrl);
+
+  } catch (err) {
+    toast('❌ Fehler: ' + err.message, 'error');
+  }
+}
+
+// =============================================
 // EPSON ePOS PRINT — TCP:9100 via server proxy
 // Uses ESC/POS commands on raw socket (proven working!)
 // Dev server provides /api/print and /api/test-printer
@@ -1096,6 +1215,9 @@ function renderHome() {
       </button>
       <button class="btn btn-ghost btn-block" onclick="W.triggerUpload()">
         <span class="icon">📁</span> Tải ảnh lên & In
+      </button>
+      <button class="btn btn-block" style="background:linear-gradient(135deg,#c9a84c,#8b6914);color:#fff;border:none;font-weight:700" onclick="W.printDankeBeleg()">
+        <span class="icon">🏮</span> Danke-Beleg drucken
       </button>
       <button class="btn btn-ghost btn-block btn-sm" onclick="W.show('setup')">
         <span class="icon">⚙️</span> Cài đặt máy in
@@ -1540,7 +1662,7 @@ const W = {
   setStyle, setFrame, setTitle,
   downloadStrip, saveStripToGallery, shareStrip,
   doPrintEpson, openSimulator, printViaSystem, printViaBluetooth,
-  savePrinterIP, openSSLCert, retryConnection, triggerUpload,
+  savePrinterIP, openSSLCert, retryConnection, triggerUpload, printDankeBeleg,
   viewGalleryItem, deleteFromGallery,
 };
 window.W = W;
