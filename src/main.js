@@ -19,9 +19,9 @@ const S = {
   photos: [],            // captured photo data URLs (max 4)
   maxPhotos: 4,
   currentStrip: null,    // composed strip data URL
-  stripTitle: 'Photo Booth',
+  stripTitle: 'ORIGAMI',
   stripStyle: 'white',   // white | vintage | dark | pink
-  frameType: 'classic',  // classic | film | polaroid | minimal | cute | retro
+  frameType: 'origami',  // origami | classic | film | polaroid | minimal | cute | retro
   filter: 'none',
   facing: 'user',        // user | environment
   gallery: [],
@@ -218,6 +218,7 @@ function renderCameraUI() {
 
 /** Frame type definitions */
 const FRAMES = {
+  origami: { name: 'ORIGAMI', icon: '🏮', desc: 'Khung ORIGAMI chuyên dụng' },
   classic: { name: 'Classic', icon: '🖼️', desc: 'Dải ảnh cổ điển' },
   film:    { name: 'Film Strip', icon: '🎞️', desc: 'Cuộn phim 35mm' },
   polaroid:{ name: 'Polaroid', icon: '📷', desc: 'Ảnh polaroid xếp chồng' },
@@ -234,6 +235,7 @@ async function composeStrip() {
 
   // Choose compositor based on frame type
   const composers = {
+    origami: composeOrigami,
     classic: composeClassic,
     film: composeFilm,
     polaroid: composePolaroid,
@@ -568,6 +570,100 @@ async function composeRetro(photos, W) {
   ctx.font = '12px Georgia, serif';
   ctx.fillStyle = '#8a6a4a';
   ctx.fillText('— ' + formatDate(new Date()) + ' —', W / 2, H - 8);
+  return c.toDataURL('image/jpeg', 0.95);
+}
+
+// ---- ORIGAMI: Custom branded frame ----
+async function composeOrigami(photos, W) {
+  const PAD = 16, GAP = 10;
+  const PW = W - PAD * 2;
+  const PH = Math.round(PW * 3 / 4);
+  const HEADER = 90;    // Logo + brand area
+  const FOOTER = 120;   // Thank you message area
+  const H = HEADER + PAD + (PH + GAP) * photos.length - GAP + PAD + FOOTER;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  // === BACKGROUND: Dark elegant gradient ===
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#1a1a2e');
+  grad.addColorStop(0.5, '#16213e');
+  grad.addColorStop(1, '#0f3460');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // === Top decorative line ===
+  ctx.fillStyle = '#c9a84c';
+  ctx.fillRect(PAD, 8, W - PAD * 2, 2);
+
+  // === HEADER: ORIGAMI brand ===
+  ctx.textAlign = 'center';
+
+  // Japanese-style decorative dots
+  ctx.fillStyle = '#c9a84c';
+  ctx.font = '16px serif';
+  ctx.fillText('✦  ✦  ✦', W / 2, 28);
+
+  // ORIGAMI logo text
+  ctx.fillStyle = '#e8d5a3';
+  ctx.font = 'bold 36px Georgia, "Times New Roman", serif';
+  ctx.fillText('ORIGAMI', W / 2, 62);
+
+  // Subtitle
+  ctx.fillStyle = '#c9a84c';
+  ctx.font = '13px Inter, sans-serif';
+  ctx.fillText('Japanese Restaurant & Bar', W / 2, 80);
+
+  // === PHOTOS ===
+  for (let i = 0; i < photos.length; i++) {
+    const img = await loadImage(photos[i]);
+    const y = HEADER + PAD + (PH + GAP) * i;
+
+    // Photo border glow
+    ctx.shadowColor = 'rgba(201, 168, 76, 0.3)';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = '#c9a84c';
+    ctx.beginPath();
+    ctx.roundRect(PAD - 2, y - 2, PW + 4, PH + 4, 6);
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+
+    // Draw photo
+    drawCover(ctx, img, PAD, y, PW, PH, 4);
+  }
+
+  // === FOOTER: Thank you message ===
+  const footerY = HEADER + PAD + (PH + GAP) * photos.length - GAP + PAD + 10;
+
+  // Decorative line
+  ctx.fillStyle = '#c9a84c';
+  ctx.fillRect(W / 2 - 80, footerY, 160, 1);
+
+  // Thank you text
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e8d5a3';
+  ctx.font = 'italic 16px Georgia, serif';
+  ctx.fillText('Cảm ơn bạn đã đến với chúng tôi', W / 2, footerY + 24);
+
+  // ORIGAMI team
+  ctx.fillStyle = '#c9a84c';
+  ctx.font = 'bold 18px Georgia, serif';
+  ctx.fillText('ORIGAMI team', W / 2, footerY + 50);
+
+  // Date
+  ctx.fillStyle = 'rgba(232, 213, 163, 0.5)';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.fillText(formatDate(new Date()), W / 2, footerY + 70);
+
+  // Decorative dots
+  ctx.fillStyle = '#c9a84c';
+  ctx.font = '14px serif';
+  ctx.fillText('✦  ✦  ✦', W / 2, footerY + 90);
+
+  // Bottom decorative line
+  ctx.fillStyle = '#c9a84c';
+  ctx.fillRect(PAD, H - 8, W - PAD * 2, 2);
+
   return c.toDataURL('image/jpeg', 0.95);
 }
 
