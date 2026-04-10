@@ -21,6 +21,7 @@ const S = {
   currentStrip: null,    // composed strip data URL
   stripTitle: 'Photo Booth',
   stripStyle: 'white',   // white | vintage | dark | pink
+  frameType: 'classic',  // classic | film | polaroid | minimal | cute | retro
   filter: 'none',
   facing: 'user',        // user | environment
   gallery: [],
@@ -198,63 +199,358 @@ function renderCameraUI() {
 }
 
 // =============================================
-// PHOTO STRIP COMPOSITOR
+// PHOTO STRIP COMPOSITOR — Multiple frame templates
 // =============================================
+
+/** Frame type definitions */
+const FRAMES = {
+  classic: { name: 'Classic', icon: '🖼️', desc: 'Dải ảnh cổ điển' },
+  film:    { name: 'Film Strip', icon: '🎞️', desc: 'Cuộn phim 35mm' },
+  polaroid:{ name: 'Polaroid', icon: '📷', desc: 'Ảnh polaroid xếp chồng' },
+  minimal: { name: 'Minimal', icon: '◻️', desc: 'Tối giản, viền mỏng' },
+  cute:    { name: 'Cute', icon: '💖', desc: 'Dễ thương, trái tim' },
+  retro:   { name: 'Retro', icon: '📺', desc: 'Hoài cổ, bo tròn' },
+};
+
 async function composeStrip() {
   if (S.photos.length === 0) return;
-  if (S.currentStrip && S.photos.length === S.maxPhotos) return; // Already composed
 
-  const WIDTH = 576; // 72mm printable area at 203 DPI
-  const PHOTO_GAP = 12;
-  const PADDING = 16;
-  const PHOTO_W = WIDTH - PADDING * 2;
-  const PHOTO_H = Math.round(PHOTO_W * 3 / 4); // 4:3 ratio
-  const FOOTER_H = 60;
+  const WIDTH = 576;
+  const photos = S.photos;
 
-  const totalH = PADDING + (PHOTO_H + PHOTO_GAP) * S.photos.length - PHOTO_GAP + FOOTER_H + PADDING;
+  // Choose compositor based on frame type
+  const composers = {
+    classic: composeClassic,
+    film: composeFilm,
+    polaroid: composePolaroid,
+    minimal: composeMinimal,
+    cute: composeCute,
+    retro: composeRetro,
+  };
 
-  const canvas = document.createElement('canvas');
-  canvas.width = WIDTH;
-  canvas.height = totalH;
-  const ctx = canvas.getContext('2d');
+  const compose = composers[S.frameType] || composeClassic;
+  S.currentStrip = await compose(photos, WIDTH);
+}
 
-  // Background
-  const bgColors = { white: '#ffffff', vintage: '#f5f0e8', dark: '#1a1a1a', pink: '#fce4ec' };
-  ctx.fillStyle = bgColors[S.stripStyle] || '#ffffff';
-  ctx.fillRect(0, 0, WIDTH, totalH);
+/** Helper: draw image with cover-fit crop */
+function drawCover(ctx, img, x, y, w, h, radius = 0) {
+  const srcAspect = img.width / img.height;
+  const destAspect = w / h;
+  let sx = 0, sy = 0, sw = img.width, sh = img.height;
+  if (srcAspect > destAspect) { sw = img.height * destAspect; sx = (img.width - sw) / 2; }
+  else { sh = img.width / destAspect; sy = (img.height - sh) / 2; }
 
-  // Draw photos with cover-fit cropping
-  for (let i = 0; i < S.photos.length; i++) {
-    const img = await loadImage(S.photos[i]);
-    const y = PADDING + i * (PHOTO_H + PHOTO_GAP);
-
-    // Cover-fit crop
-    const srcAspect = img.width / img.height;
-    const destAspect = PHOTO_W / PHOTO_H;
-    let sx = 0, sy = 0, sw = img.width, sh = img.height;
-    if (srcAspect > destAspect) {
-      sw = img.height * destAspect;
-      sx = (img.width - sw) / 2;
-    } else {
-      sh = img.width / destAspect;
-      sy = (img.height - sh) / 2;
-    }
-
-    ctx.drawImage(img, sx, sy, sw, sh, PADDING, y, PHOTO_W, PHOTO_H);
+  if (radius > 0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, radius);
+    ctx.clip();
+    ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+    ctx.restore();
+  } else {
+    ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
   }
+}
 
-  // Footer text
-  const textColor = S.stripStyle === 'dark' ? '#e0e0e0' : '#333333';
+/** Helper: draw footer text */
+function drawFooter(ctx, width, y, title, date, textColor, subColor) {
   ctx.fillStyle = textColor;
   ctx.textAlign = 'center';
   ctx.font = 'bold 22px Inter, sans-serif';
-  const footerY = totalH - PADDING - 12;
-  ctx.fillText(S.stripTitle, WIDTH / 2, footerY);
+  ctx.fillText(title, width / 2, y);
   ctx.font = '14px Inter, sans-serif';
-  ctx.fillStyle = S.stripStyle === 'dark' ? '#888' : '#999';
-  ctx.fillText(formatDate(new Date()), WIDTH / 2, footerY + 20);
+  ctx.fillStyle = subColor;
+  ctx.fillText(date, width / 2, y + 20);
+}
 
-  S.currentStrip = canvas.toDataURL('image/jpeg', 0.95);
+// ---- CLASSIC: Simple white border strip ----
+async function composeClassic(photos, W) {
+  const PAD = 16, GAP = 12;
+  const PW = W - PAD * 2, PH = Math.round(PW * 3 / 4), FOOT = 60;
+  const H = PAD + (PH + GAP) * photos.length - GAP + FOOT + PAD;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  const bgColors = { white: '#ffffff', vintage: '#f5f0e8', dark: '#1a1a1a', pink: '#fce4ec' };
+  ctx.fillStyle = bgColors[S.stripStyle] || '#fff';
+  ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < photos.length; i++) {
+    const img = await loadImage(photos[i]);
+    drawCover(ctx, img, PAD, PAD + i * (PH + GAP), PW, PH);
+  }
+  const tc = S.stripStyle === 'dark' ? '#e0e0e0' : '#333';
+  const sc = S.stripStyle === 'dark' ? '#888' : '#999';
+  drawFooter(ctx, W, H - PAD - 12, S.stripTitle, formatDate(new Date()), tc, sc);
+  return c.toDataURL('image/jpeg', 0.95);
+}
+
+// ---- FILM STRIP: 35mm film with sprocket holes ----
+async function composeFilm(photos, W) {
+  const BORDER = 40; // Side border for sprocket area
+  const PAD = 12, GAP = 10;
+  const PW = W - BORDER * 2, PH = Math.round(PW * 3 / 4);
+  const FOOT = 50;
+  const H = PAD + (PH + GAP) * photos.length - GAP + FOOT + PAD;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  // Film background (dark)
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Film edge strips
+  ctx.fillStyle = '#0d0d0d';
+  ctx.fillRect(0, 0, BORDER, H);
+  ctx.fillRect(W - BORDER, 0, BORDER, H);
+
+  // Sprocket holes on both sides
+  const holeW = 16, holeH = 10, holeGap = 18;
+  ctx.fillStyle = '#2a2a2a';
+  for (let y = 8; y < H - 8; y += holeGap + holeH) {
+    // Left side
+    ctx.beginPath();
+    ctx.roundRect((BORDER - holeW) / 2, y, holeW, holeH, 2);
+    ctx.fill();
+    // Right side
+    ctx.beginPath();
+    ctx.roundRect(W - BORDER + (BORDER - holeW) / 2, y, holeW, holeH, 2);
+    ctx.fill();
+  }
+
+  // Frame number text at top
+  ctx.fillStyle = '#c9a44c';
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('KODAK  400', BORDER + 4, 14);
+  ctx.textAlign = 'right';
+  ctx.fillText('→ 35mm', W - BORDER - 4, 14);
+
+  // Draw photos with slight warm tint border
+  for (let i = 0; i < photos.length; i++) {
+    const img = await loadImage(photos[i]);
+    const y = PAD + i * (PH + GAP);
+
+    // Photo frame line
+    ctx.strokeStyle = '#c9a44c33';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(BORDER - 1, y - 1, PW + 2, PH + 2);
+
+    drawCover(ctx, img, BORDER, y, PW, PH);
+
+    // Frame number
+    ctx.fillStyle = '#c9a44c';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${i + 1}A`, W - BORDER - 6, y + PH - 6);
+  }
+
+  // Footer
+  drawFooter(ctx, W, H - 10, S.stripTitle, formatDate(new Date()), '#c9a44c', '#666');
+  return c.toDataURL('image/jpeg', 0.95);
+}
+
+// ---- POLAROID: Stacked polaroid photos ----
+async function composePolaroid(photos, W) {
+  const CARD_PAD = 20, PHOTO_PAD_BOTTOM = 60;
+  const CARD_W = W - 40;
+  const PH = Math.round((CARD_W - CARD_PAD * 2) * 3 / 4);
+  const CARD_H = CARD_PAD + PH + PHOTO_PAD_BOTTOM;
+  const GAP = -10; // Slight overlap
+  const H = 20 + (CARD_H + GAP) * photos.length - GAP + 20;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  // Background
+  ctx.fillStyle = S.stripStyle === 'dark' ? '#1a1a1a' : '#f0ebe3';
+  ctx.fillRect(0, 0, W, H);
+
+  for (let i = 0; i < photos.length; i++) {
+    const img = await loadImage(photos[i]);
+    const cardX = (W - CARD_W) / 2;
+    const cardY = 20 + i * (CARD_H + GAP);
+
+    // Slight random rotation for natural feel
+    const rot = (i % 2 === 0 ? 1 : -1) * (1 + i * 0.3) * Math.PI / 180;
+
+    ctx.save();
+    ctx.translate(cardX + CARD_W / 2, cardY + CARD_H / 2);
+    ctx.rotate(rot);
+
+    // Card shadow
+    ctx.shadowColor = 'rgba(0,0,0,0.15)';
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 4;
+
+    // White card
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(-CARD_W / 2, -CARD_H / 2, CARD_W, CARD_H, 4);
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+
+    // Photo inside card
+    const photoX = -CARD_W / 2 + CARD_PAD;
+    const photoY = -CARD_H / 2 + CARD_PAD;
+    const photoW = CARD_W - CARD_PAD * 2;
+    drawCover(ctx, img, photoX, photoY, photoW, PH);
+
+    // Caption on polaroid
+    if (i === photos.length - 1) {
+      ctx.fillStyle = '#555';
+      ctx.font = 'italic 16px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(S.stripTitle, 0, CARD_H / 2 - 18);
+      ctx.font = '11px Inter, sans-serif';
+      ctx.fillStyle = '#999';
+      ctx.fillText(formatDate(new Date()), 0, CARD_H / 2 - 4);
+    }
+
+    ctx.restore();
+  }
+  return c.toDataURL('image/jpeg', 0.95);
+}
+
+// ---- MINIMAL: Clean thin lines ----
+async function composeMinimal(photos, W) {
+  const PAD = 24, GAP = 2, LINE = 1;
+  const PW = W - PAD * 2, PH = Math.round(PW * 3 / 4), FOOT = 50;
+  const H = PAD + (PH + GAP + LINE) * photos.length + FOOT + PAD;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  ctx.fillStyle = S.stripStyle === 'dark' ? '#111' : '#fff';
+  ctx.fillRect(0, 0, W, H);
+
+  for (let i = 0; i < photos.length; i++) {
+    const img = await loadImage(photos[i]);
+    const y = PAD + i * (PH + GAP + LINE);
+    drawCover(ctx, img, PAD, y, PW, PH);
+
+    // Thin separator line
+    if (i < photos.length - 1) {
+      ctx.fillStyle = S.stripStyle === 'dark' ? '#333' : '#ddd';
+      ctx.fillRect(PAD, y + PH + 1, PW, LINE);
+    }
+  }
+
+  // Minimal footer
+  const tc = S.stripStyle === 'dark' ? '#888' : '#aaa';
+  ctx.fillStyle = tc;
+  ctx.textAlign = 'center';
+  ctx.font = '500 14px Inter, sans-serif';
+  ctx.fillText(S.stripTitle + '  ·  ' + formatDate(new Date()), W / 2, H - PAD);
+  return c.toDataURL('image/jpeg', 0.95);
+}
+
+// ---- CUTE: Hearts, stars, soft pink ----
+async function composeCute(photos, W) {
+  const PAD = 20, GAP = 14;
+  const PW = W - PAD * 2, PH = Math.round(PW * 3 / 4), FOOT = 70;
+  const H = PAD + (PH + GAP) * photos.length - GAP + FOOT + PAD;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  // Soft pink gradient bg
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#fff0f5');
+  grad.addColorStop(0.5, '#fce4ec');
+  grad.addColorStop(1, '#f8bbd0');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Scatter decorations
+  ctx.font = '16px sans-serif';
+  ctx.globalAlpha = 0.15;
+  const deco = ['💖', '✨', '🌸', '⭐', '💕', '🦋'];
+  for (let i = 0; i < 25; i++) {
+    ctx.fillText(deco[i % deco.length], Math.random() * W, Math.random() * H);
+  }
+  ctx.globalAlpha = 1;
+
+  for (let i = 0; i < photos.length; i++) {
+    const img = await loadImage(photos[i]);
+    const y = PAD + i * (PH + GAP);
+
+    // White rounded frame
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(236,64,122,0.2)';
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.roundRect(PAD - 4, y - 4, PW + 8, PH + 8, 12);
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+
+    drawCover(ctx, img, PAD, y, PW, PH, 8);
+
+    // Small heart at corner
+    ctx.font = '18px sans-serif';
+    ctx.fillText('💗', PAD + PW - 22, y + 20);
+  }
+
+  // Cute footer
+  ctx.fillStyle = '#c2185b';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 20px Georgia, serif';
+  ctx.fillText(`✨ ${S.stripTitle} ✨`, W / 2, H - PAD - 20);
+  ctx.font = '13px Inter, sans-serif';
+  ctx.fillStyle = '#e91e63';
+  ctx.fillText(formatDate(new Date()), W / 2, H - PAD - 2);
+  return c.toDataURL('image/jpeg', 0.95);
+}
+
+// ---- RETRO: Rounded corners, warm vintage ----
+async function composeRetro(photos, W) {
+  const PAD = 20, GAP = 14;
+  const PW = W - PAD * 2, PH = Math.round(PW * 3 / 4), FOOT = 65;
+  const H = PAD + (PH + GAP) * photos.length - GAP + FOOT + PAD;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  // Warm brown bg
+  ctx.fillStyle = '#2c1810';
+  ctx.fillRect(0, 0, W, H);
+
+  // Inner panel
+  ctx.fillStyle = '#f5e6d0';
+  ctx.beginPath();
+  ctx.roundRect(8, 8, W - 16, H - 16, 16);
+  ctx.fill();
+
+  // Decorative border
+  ctx.strokeStyle = '#c9a44c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(14, 14, W - 28, H - 28, 12);
+  ctx.stroke();
+
+  for (let i = 0; i < photos.length; i++) {
+    const img = await loadImage(photos[i]);
+    const y = PAD + 8 + i * (PH + GAP);
+
+    // Dark frame around photo
+    ctx.fillStyle = '#3a2a1a';
+    ctx.beginPath();
+    ctx.roundRect(PAD - 3, y - 3, PW + 6, PH + 6, 8);
+    ctx.fill();
+
+    drawCover(ctx, img, PAD, y, PW, PH, 6);
+
+    // Warm overlay for vintage feel
+    ctx.fillStyle = 'rgba(180, 130, 60, 0.08)';
+    ctx.beginPath();
+    ctx.roundRect(PAD, y, PW, PH, 6);
+    ctx.fill();
+  }
+
+  // Retro footer with ornament
+  ctx.fillStyle = '#5a3a1a';
+  ctx.textAlign = 'center';
+  ctx.font = 'italic bold 20px Georgia, serif';
+  ctx.fillText(S.stripTitle, W / 2, H - 24);
+  ctx.font = '12px Georgia, serif';
+  ctx.fillStyle = '#8a6a4a';
+  ctx.fillText('— ' + formatDate(new Date()) + ' —', W / 2, H - 8);
+  return c.toDataURL('image/jpeg', 0.95);
 }
 
 // =============================================
@@ -677,7 +973,19 @@ function renderPreview() {
 
     <div class="customize-section">
       <div>
-        <div class="section-label">🎨 Kiểu khung</div>
+        <div class="section-label">🎬 Khung ảnh</div>
+        <div class="frame-selector">
+          ${Object.entries(FRAMES).map(([id, f]) => `
+            <div class="frame-card ${S.frameType===id?'active':''}" onclick="W.setFrame('${id}')">
+              <div class="frame-card-icon">${f.icon}</div>
+              <div class="frame-card-name">${f.name}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div>
+        <div class="section-label">🎨 Màu nền</div>
         <div class="style-chips">
           ${[
             {id:'white',label:'Trắng',bg:'#fff',c:'#333'},
@@ -975,6 +1283,11 @@ function setStyle(id) {
   S.currentStrip = null;
   render();
 }
+function setFrame(id) {
+  S.frameType = id;
+  S.currentStrip = null;
+  render();
+}
 function setTitle(val) {
   S.stripTitle = val;
   S.currentStrip = null;
@@ -990,7 +1303,7 @@ function doPrintEpson() {
 const W = {
   show, render, startSession, cancelSession, retake,
   capturePhoto, startAutoCapture, flipCamera, setFilter,
-  setStyle, setTitle,
+  setStyle, setFrame, setTitle,
   downloadStrip, saveStripToGallery, shareStrip,
   doPrintEpson, openSimulator, printViaSystem, printViaBluetooth,
   savePrinterIP, triggerUpload,
