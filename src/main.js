@@ -1225,10 +1225,11 @@ async function handleUpload(files) {
     const img = await loadImage(dataUrl);
     const ratio = img.height / img.width;
 
-    // If image is tall (height > 1.8x width), treat as pre-made strip
-    if (ratio > 1.8) {
+    // If image is tall (height > 1.5x width), treat as pre-made strip
+    if (ratio > 1.5) {
       S.currentStrip = dataUrl;
       S.photos = [dataUrl];
+      S._directStrip = true;
       toast('📸 Ảnh strip dài — in trực tiếp!', 'success');
       show('preview');
       return;
@@ -1238,6 +1239,7 @@ async function handleUpload(files) {
   // Normal flow: load images for composition
   S.photos = [];
   S.currentStrip = null;
+  S._directStrip = false;
 
   for (const file of toLoad) {
     try {
@@ -1357,10 +1359,16 @@ function render() {
     setTimeout(() => renderCameraUI(), 50);
   }
   if (S.screen === 'preview') {
-    composeStrip().then(() => {
+    // Skip compose if a pre-made strip was uploaded directly
+    if (S._directStrip && S.currentStrip) {
       const img = $('#strip-img');
-      if (img && S.currentStrip) img.src = S.currentStrip;
-    });
+      if (img) img.src = S.currentStrip;
+    } else {
+      composeStrip().then(() => {
+        const img = $('#strip-img');
+        if (img && S.currentStrip) img.src = S.currentStrip;
+      });
+    }
   }
 }
 
@@ -1445,22 +1453,24 @@ function renderCamera() {
 
 // ----- PREVIEW -----
 function renderPreview() {
+  const isDirect = S._directStrip;
   return `
   <div class="screen active preview-screen" id="screen-preview">
     <div class="preview-header">
-      <button class="btn btn-sm btn-ghost" onclick="W.retake()">
-        <span class="icon">↩</span> Chụp lại
+      <button class="btn btn-sm btn-ghost" onclick="${isDirect ? 'W.show(\'home\')' : 'W.retake()'}">
+        <span class="icon">↩</span> ${isDirect ? 'Quay lại' : 'Chụp lại'}
       </button>
-      <div class="preview-title">Kết quả</div>
+      <div class="preview-title">${isDirect ? 'In ảnh strip' : 'Kết quả'}</div>
       <button class="btn btn-sm btn-ghost" onclick="W.show('home')">✕</button>
     </div>
 
     <div class="strip-container">
       <div class="strip-preview">
-        <img id="strip-img" src="" alt="Photo Strip">
+        <img id="strip-img" src="${isDirect && S.currentStrip ? S.currentStrip : ''}" alt="Photo Strip">
       </div>
     </div>
 
+    ${isDirect ? '' : `
     <div class="customize-section">
       <div>
         <div class="section-label">🎬 Khung ảnh</div>
@@ -1509,6 +1519,7 @@ function renderPreview() {
                placeholder="Nhập tiêu đề..." oninput="W.setTitle(this.value)">
       </div>
     </div>
+    `}
 
     <div class="action-row">
       <button class="btn btn-accent btn-block" onclick="W.show('print')">
