@@ -1225,8 +1225,9 @@ async function handleUpload(files) {
     const img = await loadImage(dataUrl);
     const ratio = img.height / img.width;
 
-    // If image is tall (height > 1.5x width), treat as pre-made strip
-    if (ratio > 1.5) {
+    // If image is very tall (height > 2.5x width), treat as pre-made strip
+    // Normal portrait = ~1.3-1.8, strip with 4 photos = ~4.0+
+    if (ratio > 2.5) {
       S.currentStrip = dataUrl;
       S.photos = [dataUrl];
       S._directStrip = true;
@@ -1798,9 +1799,9 @@ function deleteFromGallery(id) {
 // =============================================
 // SHORTCUT ACTIONS
 // =============================================
-function startSession() { S.photos = []; S.currentStrip = null; show('camera'); }
+function startSession() { S.photos = []; S.currentStrip = null; S._directStrip = false; show('camera'); }
 function cancelSession() { stopCamera(); S.photos = []; show('home'); }
-function retake() { S.photos = []; S.currentStrip = null; show('camera'); }
+function retake() { S.photos = []; S.currentStrip = null; S._directStrip = false; show('camera'); }
 function setFilter(f) {
   S.filter = f;
   const v = $('#viewfinder');
