@@ -14,7 +14,7 @@ function epsonPrintPlugin() {
     name: 'epson-print-proxy',
     configureServer(server) {
 
-      // ---- Raster image print ----
+      // ---- Raster image print (supports TALL images via banding) ----
       server.middlewares.use('/api/print', async (req, res) => {
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -31,15 +31,32 @@ function epsonPrintPlugin() {
 
           const rasterBytes = Buffer.from(rasterBase64, 'base64');
           const wBytes = Math.ceil(width / 8);
+          const BAND_HEIGHT = 256; // lines per band (safe for printer buffer)
 
-          const commands = Buffer.concat([
-            Buffer.from([0x1B, 0x40]),                // ESC @ — Initialize
-            Buffer.from([0x1D, 0x76, 0x30, 0x00]),    // GS v 0 — Print raster
-            Buffer.from([wBytes & 0xFF, (wBytes >> 8) & 0xFF]),
-            Buffer.from([height & 0xFF, (height >> 8) & 0xFF]),
-            rasterBytes,
-            Buffer.from([0x1D, 0x56, 0x42, 0x03]),    // GS V B — Partial cut
-          ]);
+          const parts = [];
+          // Initialize printer
+          parts.push(Buffer.from([0x1B, 0x40])); // ESC @
+
+          // Split image into bands for tall images
+          let offset = 0;
+          for (let y = 0; y < height; y += BAND_HEIGHT) {
+            const bandH = Math.min(BAND_HEIGHT, height - y);
+            const bandSize = wBytes * bandH;
+            const bandData = rasterBytes.slice(offset, offset + bandSize);
+
+            // GS v 0 — Print raster band
+            parts.push(Buffer.from([0x1D, 0x76, 0x30, 0x00]));
+            parts.push(Buffer.from([wBytes & 0xFF, (wBytes >> 8) & 0xFF]));
+            parts.push(Buffer.from([bandH & 0xFF, (bandH >> 8) & 0xFF]));
+            parts.push(bandData);
+            offset += bandSize;
+          }
+
+          // Partial cut after all bands printed
+          parts.push(Buffer.from([0x1D, 0x56, 0x42, 0x03])); // GS V B
+
+          const commands = Buffer.concat(parts);
+          console.log(`Printing: ${width}x${height}px, ${Math.ceil(height/BAND_HEIGHT)} bands, ${commands.length} bytes`);
 
           await sendToPrinter(ip, commands);
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -200,12 +217,14 @@ function epsonPrintPlugin() {
 function sendToPrinter(ip, data) {
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
-    socket.setTimeout(10000);
+    socket.setTimeout(30000); // 30s for large images
     socket.on('timeout', () => { socket.destroy(); reject(new Error('Timeout')); });
     socket.on('error', reject);
     socket.connect(9100, ip, () => {
       socket.write(data, () => {
-        setTimeout(() => { socket.destroy(); resolve(); }, 1000);
+        // Wait longer for tall images (proportional to data size)
+        const waitMs = Math.max(1500, Math.min(5000, Math.round(data.length / 10000)));
+        setTimeout(() => { socket.destroy(); resolve(); }, waitMs);
       });
     });
   });

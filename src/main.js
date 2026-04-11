@@ -862,7 +862,7 @@ async function printDankeBeleg() {
         logoWidth,
         logoHeight,
       }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(30000), // 30s for tall images
     });
 
     const result = await resp.json();
