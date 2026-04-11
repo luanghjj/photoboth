@@ -1208,13 +1208,34 @@ function triggerUpload() {
 async function handleUpload(files) {
   if (!files || files.length === 0) return;
 
-  // Take up to maxPhotos images
   const toLoad = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, S.maxPhotos);
   if (toLoad.length === 0) return;
 
   toast(`Đang tải ${toLoad.length} ảnh...`, 'info');
 
-  // Load images into S.photos for composition
+  // If single image, check if it's already a strip (tall aspect ratio)
+  if (toLoad.length === 1) {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(toLoad[0]);
+    });
+
+    const img = await loadImage(dataUrl);
+    const ratio = img.height / img.width;
+
+    // If image is tall (height > 1.8x width), treat as pre-made strip
+    if (ratio > 1.8) {
+      S.currentStrip = dataUrl;
+      S.photos = [dataUrl];
+      toast('📸 Ảnh strip dài — in trực tiếp!', 'success');
+      show('preview');
+      return;
+    }
+  }
+
+  // Normal flow: load images for composition
   S.photos = [];
   S.currentStrip = null;
 
